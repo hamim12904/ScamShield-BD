@@ -221,7 +221,7 @@ def _is_noise_lower(t, use_vocab=True):
     ratio = vowels_y / n
     is_suspect = (
         vowels_y == 0
-        or (n >= 8 and (ratio < 0.12 or longest_run >= 7 or (longest_run >= 6 and ratio < 0.20)))
+        or (n >= 8 and (longest_run >= 7 or (longest_run >= 6 and ratio < 0.20)))
     )
     if not is_suspect:
         return False
@@ -242,11 +242,14 @@ def _is_gibberish_token(w):
     vowels = sum(c in "aeiouy" for c in w)
     if vowels == 0:
         return True
-    if _GIBBERISH_CLUSTER_RE.search(w):
+    if any(k in w for k in _KEEP_SUBSTRINGS):
+        return False
+    standard_ending = bool(_STD_ENDING_RE.search(w))
+    if not standard_ending and _GIBBERISH_CLUSTER_RE.search(w):
         return True
-    if re.search(r"[bcdfghjklmnpqrstvwxz]{3,}$", w) and not _STD_ENDING_RE.search(w):
+    if not standard_ending and re.search(r"[bcdfghjklmnpqrstvwxz]{3,}$", w):
         return True
-    return len(w) >= 7 and (vowels / len(w)) < 0.18
+    return len(w) >= 7 and not standard_ending and (vowels / len(w)) < 0.18
 
 
 def _is_gibberish_only(body, n_noise_removed=0):
@@ -260,7 +263,7 @@ def _is_gibberish_only(body, n_noise_removed=0):
         return False
     if any(w in _COMMON_SHORT for w in tokens):
         return False
-    if n_noise_removed > 0 and len(tokens) <= 2 and all(len(w) >= 4 for w in tokens):
+    if n_noise_removed > 0 and len(tokens) <= 2 and all(_is_gibberish_token(w) for w in tokens):
         return True
     suspicious = sum(_is_gibberish_token(w) for w in tokens)
     if suspicious == len(tokens):

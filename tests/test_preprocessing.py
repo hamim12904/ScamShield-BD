@@ -67,6 +67,18 @@ class TestPreprocessing(unittest.TestCase):
             out = preprocess(w)
             self.assertFalse(out["noise_only"], f"{w!r} was falsely flagged noise_only")
 
+    def test_consonant_cluster_words_not_dropped(self):
+        for w in ("strengths", "twelfths", "month", "months"):
+            self.assertFalse(is_noise_token(w), f"{w!r} was falsely flagged as noise")
+            out = preprocess(w)
+            self.assertFalse(out["noise_only"], f"{w!r} was falsely flagged noise_only")
+            self.assertIn(w, out["clean"])
+        with_noise = preprocess("zzqwpo strengths")
+        self.assertFalse(with_noise["noise_only"])
+        self.assertIn("strengths", with_noise["clean"])
+        for w in ("wkrjfejejrn", "bcdfghjkl", "haswqzxgjsyh"):
+            self.assertTrue(is_noise_token(w), f"{w!r} should be flagged as noise")
+
     def test_true_noise_only_rows(self):
         for bad in ("", "   ", None, float("nan"), "lkjsdfoiu xcvbnm", "zzqpwoeiru", "haswqzxgjsyh xkrdzrcrm fmbkjjea !!"):
             self.assertTrue(preprocess(bad)["noise_only"], f"{bad!r} should be noise_only")

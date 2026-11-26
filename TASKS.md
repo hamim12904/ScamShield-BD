@@ -26,16 +26,16 @@
 ## Phase 0 — Foundations (Thu 23:15 → Fri 00:30)
 
 - [ ] **T-001 [N] P0 · 20 min** Create missing folders and stubs per `ARCHITECTURE.md` (`notebooks/`, `outputs/*`, `src/features|models|training|evaluation`, `tools/`, `tests/`, `docs/`); add `.gitignore` entries (`.env`, `data/`, `outputs/cache/`, `.venv/`). *Done when:* repo tree matches the doc and imports resolve.
-- [ ] **T-002 [N+T] P0 · 10 min** Agree the frozen interfaces (ARCHITECTURE §4): columns produced by `build_views`, schema of `folds.json`, name of the group column. *Done when:* both confirm in chat and `MEMORY.md` §4 logs it.
+- [ ] **T-002 [N+T] P0 · 10 min** Agree the frozen interfaces (ARCHITECTURE §4): columns produced by `build_views`, schema of `folds.csv`, name of the group column. *Done when:* both confirm in chat and `MEMORY.md` §4 logs it.
 - [ ] **T-003 [T] P0 · 60 min** Stage 1 EDA → `outputs/validation_results/eda_report.md`. Must answer the PRD open questions: class counts, languages, single vs convo, speaker-marker format, duplicate/template clusters, **label × techniques × action cross-tab**, **noise-only rows' labels**, class 5 behaviour. Post findings in `MEMORY.md` §5.
 - [ ] **T-004 [T] P0 · 90 min** Stage 2 `preprocessing.py`: three views + structure features + `normalise_chars`, `is_noise_token`. Include zero-width handling and the ZWJ/ZWNJ-in-Bangla rule. Pass `test_preprocessing.py`. (You already have `check_noise.py`; use its findings for noise stats.)
-- [ ] **T-005 [T] P0 · 60 min** Stage 3 `cross_validation.py`: duplicate/template clustering → `group_id`; `StratifiedGroupKFold` 5×3; save `outputs/folds.json`; fallback for rare classes; `get_folds`. Pass `test_folds.py`.
+- [ ] **T-005 [T] P0 · 60 min** Stage 3 `cross_validation.py`: duplicate/template clustering → `group_id`; `StratifiedGroupKFold` 5×3; save `outputs/validation_results/folds.csv`; fallback for rare classes; `get_folds`. Pass `test_folds.py`.
 - [ ] **T-006 [N] P0 · 30 min** `tools/validate_submission.py`: compare with `sample_submission.csv` and `test.csv` (columns/order, ids exactly once, int labels, `NONE` rule, confidence range, row count). Plus `test_submission.py`.
 - [ ] **T-007 [N] P0 · 45 min** `evaluation/metrics.py`: macro-F1 A/C, multi-label macro-F1 B, Brier calibration, composite surrogate, slice reporting.
 
 ## Phase 1 — Baseline (Fri 00:30 → 01:30)
 
-- [ ] **T-010 [N] P0 · 60 min** Model 1 end-to-end: `tfidf_features.py`, `task_a/b/c.py`, `train_baseline.py`, `submission.py`, `prediction.py`. Use quick random folds until `folds.json` lands, then switch. *Done when:* `python -m src.prediction` writes a file that passes the validator.
+- [ ] **T-010 [N] P0 · 60 min** Model 1 end-to-end: `tfidf_features.py`, `task_a/b/c.py`, `train_baseline.py`, `submission.py`, `prediction.py`. Use quick random folds until `folds.csv` lands, then switch. *Done when:* `python -m src.prediction` writes a file that passes the validator.
 - [ ] **T-011 [N] P0 · 10 min** Submit to Kaggle → **Submission #1** (log in `MEMORY.md`). Purpose: prove the format and see the public score. Do not tune against it.
 - [ ] **T-012 [A] P0 · 10 min** Commit, push, update `MEMORY.md` (state, scores, open issues).
 

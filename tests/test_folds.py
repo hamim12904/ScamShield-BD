@@ -5,6 +5,7 @@ import unittest
 
 import pandas as pd
 
+from data.extra.handwritten import load_handwritten, validate
 from src import config
 from src.augment import corrupt, expand
 from src.data_loader import load_sample
@@ -112,6 +113,15 @@ class TestFoldsAndAugment(unittest.TestCase):
         b1 = corrupt(conv, random.Random(7), level="medium", ops="B")
         self.assertEqual(b1.count("|||"), 2)
         self.assertNotEqual(r1, b1)
+
+    def test_handwritten_extras_are_valid_and_grouped(self):
+        df = load_handwritten()
+        self.assertTrue(validate())
+        self.assertEqual(len(df), 84)
+        self.assertEqual(df["group_id"].nunique(), 14)
+        self.assertTrue((df.groupby("group_id").size() == 6).all())
+        self.assertEqual(set(df.loc[df["label"].isin([0, 5]), "techniques"]), {"NONE"})
+        self.assertEqual(df["source"].unique().tolist(), ["handwritten"])
 
 
 if __name__ == "__main__":

@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 MODULE_PATHS: tuple[str, ...] = (
     "src/config.py",
     "src/data_loader.py",
+    "data/extra/handwritten.py",
     "src/preprocessing.py",
     "src/augment.py",
     "src/text_analysis.py",
@@ -41,6 +42,8 @@ MODULE_PATHS: tuple[str, ...] = (
 )
 
 PACKAGE_DIRS: tuple[str, ...] = (
+    "data",
+    "data/extra",
     "src",
     "src/evaluation",
     "src/features",
@@ -113,8 +116,8 @@ def build_declaration_markdown(section_11_text: str) -> str:
 - **Secrets / Keys:** Read exclusively via `os.getenv` / `python-dotenv`. No keys are hardcoded in this notebook.
 
 ## 3. Method & Validation Summary
-- **Model:** Multi-view TF-IDF (character skeleton + word + raw-char + first/last message + lexical cues) with class-balanced Logistic Regression for Tasks A (`label`), B (`techniques`), and C (`action`), plus a data-verified noise-only rule and a logistic confidence calibrator.
-- **Validation:** 5x3 grouped cross-validation (`folds.csv`) on real labeled rows only, preventing leakage across duplicate/template groups, with slice metrics and leave-cluster-out checks.
+- **Model:** E021 ensemble: multi-view TF-IDF (character skeleton + word + raw-char + first/last message + lexical cues) with class-balanced LR+LinearSVC M1 heads for Tasks A (`label`), B (`techniques`), and C (`action`), CV-tuned blend with declared Model 2 MiniLM E020 probabilities, a data-verified noise-only rule, and logistic confidence calibration with disagreement/OOD-similarity features.
+- **Validation:** 5x3 grouped cross-validation (`folds.csv`) on real labeled rows only, preventing leakage across duplicate/template groups, with slice metrics and leave-cluster-out checks. The 84 declared hand-written minimal-pair rows keep their `group_id` and are adopted only if grouped CV improves.
 - **Corruption Robustness:** Set A corruption augmentation is applied to training folds only (inheriting source `group_id`); Set B corruption is reserved for evaluation.
 
 ## 4. Reproducibility & Execution
@@ -283,24 +286,21 @@ print(f"Test rows:    {len(df_test)} (full={len(df_test_full)})")
 
 
 def build_cv_cell() -> str:
-    """Return run cell for grouped-CV summary, slices, and corruption robustness score."""
+    """Return run cell for the full E021 CV/blend/calibration/final-fit/prediction pipeline."""
     return """t0 = time.perf_counter()
 tracemalloc.start()
 
-print("Running 5x3 grouped cross-validation (clean + slices + Set B corruption)...")
-if hasattr(cross_validation, "main"):
-    cross_validation.main()
-
-fitted = prediction.fit_all(df_labeled)
+print("Running E021 grouped CV, M1+M2 blend, calibration, final fit, and prediction...")
+FINAL_SUBMISSION_PATH = prediction.main()
 cv_elapsed = time.perf_counter() - t0
-print(f"CV + final fit completed in {cv_elapsed:.2f}s")
+print(f"E021 full pipeline completed in {cv_elapsed:.2f}s")
 """
 
 
 def build_predict_and_validate_cell() -> str:
     """Return run cell for test inference via predict_df, writing submission.csv, and validation."""
     return r"""t1 = time.perf_counter()
-sub_df = prediction.predict_df(df_test[["id", "text"]], fitted)
+sub_df = pd.read_csv(FINAL_SUBMISSION_PATH)
 pred_elapsed = time.perf_counter() - t1
 
 out_dir = Path(getattr(config, "OUT_DIR", Path(".")))
@@ -313,17 +313,10 @@ root_sub = Path("submission.csv")
 if root_sub.resolve() != SUBMISSION_PATH.resolve():
     sub_df.to_csv(root_sub, index=False, encoding="utf-8")
 
-# Validate against full test.csv (or sliced temp file during local smoke test)
-if TEST_SLICE is not None and TEST_SLICE < len(df_test_full):
-    eval_test_path = out_dir / "_test_slice.csv"
-    df_test.to_csv(eval_test_path, index=False, encoding="utf-8")
-else:
-    eval_test_path = TEST_PATH
-
 errors = validate_submission.validate(
     SUBMISSION_PATH,
     sample_path=SAMPLE_SUB_PATH,
-    test_path=eval_test_path,
+    test_path=TEST_PATH,
 )
 if errors:
     raise RuntimeError("Submission validation failed:\n" + "\n".join(f"  - {e}" for e in errors))
@@ -334,7 +327,7 @@ total_elapsed = time.perf_counter() - t0
 
 print(f"VALIDATION PASSED: {SUBMISSION_PATH}")
 print(
-    f"Prediction time: {pred_elapsed:.2f}s | Total wall time: {total_elapsed:.2f}s | "
+    f"Prediction load/validate: {pred_elapsed:.2f}s | Total wall time: {total_elapsed:.2f}s | "
     f"Peak traced RAM: {peak_mem_bytes / (1024 ** 2):.1f} MB"
 )
 print("\nClass distribution:")
