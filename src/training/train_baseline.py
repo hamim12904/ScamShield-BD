@@ -1,4 +1,5 @@
 """Stage 4: baseline + first calibrated submission.   python -m src.training.train_baseline"""
+from datetime import datetime, timezone
 import hashlib
 from pathlib import Path
 import random
@@ -7,7 +8,7 @@ import time
 
 import numpy as np
 import pandas as pd
-from scipy.sparse import csr_matrix, hstack
+from scipy.sparse import csr_matrix, hstack, vstack
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import KFold, StratifiedGroupKFold, StratifiedKFold
@@ -21,21 +22,39 @@ from src.evaluation.calibration import fit_confidence
 from src.preprocessing import BANGLA, URL_RE, build_views, preprocess
 from src.training.cross_validation import assign_groups, cross_validate, leave_cluster_out_cv
 
-# Lightweight content-semantic cues
+EXPERIMENTS_PATH = config.VALIDATION_DIR / "experiments.csv"
+
+# Bilingual (English + Banglish + Bangla Unicode) semantic cues
 _PHONE_RE = re.compile(r"(?:\+?880|01[3-9])\s*[\dXx-]{6,}")
 _USSD_RE = re.compile(r"\*\d+(?:\*\d+)*#")
-_MONEY_RE = re.compile(r"(?:\btk\.?|\btaka\b|\bbdt\b|৳|\b\d+(?:,\d+)*\s*k\b)", re.I)
-_CRED_RE = re.compile(r"\b(?:pin|otp|cvv|password|passcode|nid|kyc|verification\s*code)\b", re.I)
-_URGENCY_RE = re.compile(r"\b(?:urgent|immediately|expire|blocked|suspend|within\s*\d+|today|sesh|ekhoni|joruri)\b", re.I)
-_REWARD_RE = re.compile(r"\b(?:congrat|won|winner|prize|lottery|lucky\s*draw|bonus|jitech|jitun|cashback|free)\b", re.I)
+_MONEY_RE = re.compile(
+    r"(?:\btk\.?|\btaka\b|\bbdt\b|৳|\b\d+(?:,\d+)*\s*k\b|টাকা|লক্ষ|হাজার|ক্যাশ\s*আউট)",
+    re.I,
+)
+_CRED_RE = re.compile(
+    r"(?:\b(?:pin|otp|cvv|password|passcode|nid|kyc|verification\s*code)\b"
+    r"|(?:current|bkash|nagad|rocket|mcash)(?:pin|otp|kyc)"
+    r"|পিন|ওটিপি|পাসওয়ার্ড|পাসওয়ার্ড|ভেরিফিকেশন|কোড|এনআইডি)",
+    re.I,
+)
+_URGENCY_RE = re.compile(
+    r"(?:\b(?:urgent|immediately|expire|blocked|suspend|within\s*\d+|today|sesh|ekhoni|joruri)\b"
+    r"|জরুরি|জরুরী|ব্লক|বন্ধ|আজই|এখনই|আটকে|বাতিল|শেষ)",
+    re.I,
+)
+_REWARD_RE = re.compile(
+    r"(?:\b(?:congrat|won|winner|prize|lottery|lucky\s*draw|bonus|jitech|jitun|cashback|free)\b"
+    r"|অভিনন্দন|জিতেছেন|জিতুন|ক্যাশব্যাক|পুরস্কার|বোনাস|ফ্রি|লটারি|অফার|ছাড়|ছাড়)",
+    re.I,
+)
 _BANGLA_RE = re.compile(rf"[{BANGLA}]")
 
 
-def _extract_cues(clean_texts, n_messages_arr, emoji_counts, noise_ratios, bangla_ratios):
+def _extract_cues(norm_texts, n_messages_arr, emoji_counts, noise_ratios, bangla_ratios):
     """Domain + structure cues (including emoji_count and noise_ratio) complementing TF-IDF."""
-    n = len(clean_texts)
+    n = len(norm_texts)
     feats = np.zeros((n, 12), dtype=np.float32)
-    for i, t in enumerate(clean_texts):
+    for i, t in enumerate(norm_texts):
         if t:
             feats[i, 0] = 1.0 if (("." in t or "://" in t) and URL_RE.search(t)) else 0.0
             feats[i, 1] = 1.0 if _PHONE_RE.search(t) else 0.0
@@ -71,14 +90,28 @@ class Baseline:
         self.tech_threshold = tech_threshold
         self.seed = seed
 
+    def _transform_first_last(self, firsts, lasts):
+        """Reuse X_first on single-turn rows (first == last) to avoid redundant TF-IDF transforms."""
+        X_first = self.v_turn.transform(firsts)
+        diff_idx = [i for i, (f, l) in enumerate(zip(firsts, lasts)) if f != l]
+        if not diff_idx:
+            return X_first, X_first
+        X_diff = self.v_turn.transform([lasts[i] for i in diff_idx])
+        row_map = np.arange(len(firsts), dtype=np.int64)
+        for pos, orig_i in enumerate(diff_idx):
+            row_map[orig_i] = len(firsts) + pos
+        X_last = vstack([X_first, X_diff], format="csr")[row_map]
+        return X_first, X_last
+
     def _build_text_features(self, skel, norm, firsts, lasts, n_msgs, emojis, noise_ratios, bangla_ratios):
+        X_first, X_last = self._transform_first_last(firsts, lasts)
         return hstack([
             self.vc.transform(skel),
             self.vw.transform([s.lower() for s in norm]),
             self.vp.transform(norm),
-            self.vf.transform(firsts),
-            self.vl.transform(lasts),
-            _extract_cues(skel, n_msgs, emojis, noise_ratios, bangla_ratios),
+            X_first,
+            X_last,
+            _extract_cues(norm, n_msgs, emojis, noise_ratios, bangla_ratios),
         ]).tocsr()
 
     def _fit_task_a(self, X, y):
@@ -121,7 +154,6 @@ class Baseline:
         self.action_by_label = train.groupby("label")["action"].agg(lambda s: int(s.mode().iloc[0])).to_dict()
         self.default_action_ = int(train["action"].mode().iloc[0])
 
-        # Group assignment for leak-free inner stacking
         groups_orig = (
             train["group"].to_numpy()
             if "group" in train.columns
@@ -138,7 +170,7 @@ class Baseline:
         parent_idx = np.array(parent_idx, dtype=int)
 
         prep = [preprocess(t) for t in texts]
-        skel = [p["clean"].lower() for p in prep]
+        skel = [p["skel"] for p in prep]
         norm = [p["preserved"] for p in prep]
         firsts = [p["first_msg"].lower() for p in prep]
         lasts = [p["last_msg"].lower() for p in prep]
@@ -153,16 +185,19 @@ class Baseline:
             analyzer="word", ngram_range=(1, 2), sublinear_tf=True,
             token_pattern=r"(?u)[\w\u0980-\u09FF]+", min_df=min_df,
         )
-        # Preserved char block retains emoji/punctuation/casing cues alongside normalized text
-        self.vp = TfidfVectorizer(analyzer="char", ngram_range=(1, 4), lowercase=False, sublinear_tf=True, min_df=min_df, max_features=20_000)
-        self.vf = TfidfVectorizer(analyzer="char_wb", ngram_range=(2, 4), sublinear_tf=True, min_df=min_df, max_features=15_000)
-        self.vl = TfidfVectorizer(analyzer="char_wb", ngram_range=(2, 4), sublinear_tf=True, min_df=min_df, max_features=15_000)
+        self.vp = TfidfVectorizer(
+            analyzer="char", ngram_range=(1, 3), lowercase=False,
+            sublinear_tf=True, min_df=min_df, max_features=15_000,
+        )
+        self.v_turn = TfidfVectorizer(
+            analyzer="char_wb", ngram_range=(2, 4), sublinear_tf=True,
+            min_df=min_df, max_features=15_000,
+        )
 
         self.vc.fit(skel)
         self.vw.fit([s.lower() for s in norm])
         self.vp.fit(norm)
-        self.vf.fit(firsts)
-        self.vl.fit(lasts)
+        self.v_turn.fit(firsts + [l for f, l in zip(firsts, lasts) if f != l])
 
         X_all = self._build_text_features(skel, norm, firsts, lasts, n_msgs, emojis, noise_ratios, bangla_ratios)
         y_a_all = y_a_real[parent_idx]
@@ -173,10 +208,11 @@ class Baseline:
         self.clf_a = self._fit_task_a(X_all, y_a_all)
 
         # 2) Leak-free inner-OOF grouping by source group
-        n_groups = len(np.unique(groups_orig))
-        if n_groups >= 2:
-            n_inner = min(5, n_groups)
-            splitter = StratifiedGroupKFold(n_splits=n_inner, shuffle=True, random_state=self.seed)
+        min_cls_grp = int(
+            pd.DataFrame({"y": y_a_real, "g": groups_orig}).groupby("y")["g"].nunique().min()
+        )
+        if min_cls_grp >= 2:
+            splitter = StratifiedGroupKFold(n_splits=min(5, min_cls_grp), shuffle=True, random_state=self.seed)
             splits = list(splitter.split(np.zeros(n_orig), y_a_real, groups_orig))
         else:
             min_cnt = int(pd.Series(y_a_real).value_counts().min())
@@ -236,9 +272,12 @@ class Baseline:
 
     def predict(self, df, preprocessed=False, batch_size=50_000):
         n = len(df)
-        req = {"clean", "preserved", "first_msg", "last_msg", "n_messages", "emoji_count", "noise_ratio", "script_bangla_ratio", "noise_only"}
+        req = {
+            "skel", "preserved", "first_msg", "last_msg",
+            "n_messages", "emoji_count", "noise_ratio", "script_bangla_ratio", "noise_only",
+        }
         if preprocessed and req.issubset(df.columns):
-            skel_all = df["clean"].fillna("").str.lower().tolist()
+            skel_all = df["skel"].fillna("").tolist()
             norm_all = df["preserved"].fillna("").tolist()
             first_all = df["first_msg"].fillna("").str.lower().tolist()
             last_all = df["last_msg"].fillna("").str.lower().tolist()
@@ -249,7 +288,7 @@ class Baseline:
             noise_all = df["noise_only"].to_numpy(dtype=bool)
         else:
             prep = [preprocess(t) for t in df["text"]]
-            skel_all = [p["clean"].lower() for p in prep]
+            skel_all = [p["skel"] for p in prep]
             norm_all = [p["preserved"] for p in prep]
             first_all = [p["first_msg"].lower() for p in prep]
             last_all = [p["last_msg"].lower() for p in prep]
@@ -338,7 +377,7 @@ def load_or_build_preprocessed_test(test_df):
     print(f"Preprocessing {len(test_df):,} test rows (cached once per preprocessing.py version)...", flush=True)
     test_prep = build_views(test_df[["id", "text"]], log_every=100_000)
     keep_cols = [
-        "id", "clean", "preserved", "first_msg", "last_msg",
+        "id", "clean", "skel", "preserved", "first_msg", "last_msg",
         "n_messages", "emoji_count", "noise_ratio", "script_bangla_ratio",
         "noise_only", "n_noise_tokens", "template_key",
     ]
@@ -346,6 +385,17 @@ def load_or_build_preprocessed_test(test_df):
     test_prep.to_pickle(cache_path)
     print(f"Done in {time.perf_counter() - t0:.1f}s -> saved {cache_path.name}", flush=True)
     return test_prep
+
+
+def _append_experiment_row(row, path=EXPERIMENTS_PATH):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    new_df = pd.DataFrame([row])
+    if path.exists():
+        old_df = pd.read_csv(path)
+        combined = pd.concat([old_df, new_df], ignore_index=True)
+    else:
+        combined = new_df
+    combined.to_csv(path, index=False)
 
 
 def main(exp_name="e001"):
@@ -357,15 +407,16 @@ def main(exp_name="e001"):
         df, Baseline, n_repeats=config.N_REPEATS, exp_name=exp_name, model_tag="m1", return_oof=True
     )
     print(summary)
+    slice_means = extra["slices"].groupby("view").mean(numeric_only=True).drop(columns=["rep"])
     print("\nSlice F_A (mean across repeats):")
-    print(extra["slices"].groupby("view").mean(numeric_only=True).drop(columns=["rep"]).round(3))
+    print(slice_means.round(3))
 
     lco_scores, _ = leave_cluster_out_cv(df, Baseline, saved_folds=extra["folds"])
     print("\nLeave-cluster-out proxy:", {k: round(v, 3) for k, v in lco_scores.items()})
 
     res.to_csv(config.VALIDATION_DIR / "baseline_cv.csv", index=False)
 
-    # Fit cross-fitted confidence calibrator on OOF Task A probabilities
+    # Fit cross-fitted confidence calibrator on repeat-averaged OOF Task A probabilities
     sample_views = build_views(df)
     calibrator = fit_confidence(
         extra["clean"]["proba"],
@@ -377,6 +428,26 @@ def main(exp_name="e001"):
         f"\nCalibration (OOF): brier={calibrator['oof_brier']:.4f} "
         f"(const baseline={calibrator['const_brier']:.4f}, 1-brier={1.0 - calibrator['oof_brier']:.4f})"
     )
+
+    clean_m = res[res["view"] == "clean"][["F_A", "F_B", "F_C", "brier"]].mean()
+    corr_m = res[res["view"] == "corrupted"][["F_A", "F_B", "F_C", "brier"]].mean()
+    exp_row = {
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "exp_name": exp_name,
+        "model_tag": "m1",
+        "F_A": round(float(clean_m["F_A"]), 4),
+        "F_B": round(float(clean_m["F_B"]), 4),
+        "F_C": round(float(clean_m["F_C"]), 4),
+        "brier": round(float(clean_m["brier"]), 4),
+        "cal_oof_brier": round(float(calibrator["oof_brier"]), 4),
+        "corrupted_F_A": round(float(corr_m["F_A"]), 4),
+        "lco_F_A": round(float(lco_scores["F_A"]), 4),
+    }
+    if "clean" in slice_means.index:
+        for col, val in slice_means.loc["clean"].items():
+            exp_row[col] = round(float(val), 4)
+    _append_experiment_row(exp_row)
+    print(f"Logged experiment row to {EXPERIMENTS_PATH}")
 
     model = Baseline().fit(df.assign(group=extra["folds"]["group"].values))
     test, template = load_test(), load_submission_template()

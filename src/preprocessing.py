@@ -3,9 +3,11 @@
 Run from the project root:
     python -m src.preprocessing
 """
+from collections import Counter
 from functools import lru_cache
 import math
 import re
+import time
 import unicodedata
 
 import ftfy
@@ -46,6 +48,13 @@ DIGITS_RE = re.compile(r"\d+")
 BANGLA_OR_DIGIT_RE = re.compile(rf"[{BANGLA}0-9]")
 HAS_LETTERS_RE = re.compile(rf"[A-Za-z{BANGLA}]{{2,}}")
 ANY_WORD_TOKEN_RE = re.compile(rf"[A-Za-z0-9{BANGLA}]+")
+
+# Skeleton & digit-shape helpers (strict boundaries avoid splitting 40K, 10GB, 017XXXXXX73)
+_SPACED_RE = re.compile(r"(?<![A-Za-z0-9])(?:[A-Za-z][ .\-_]){3,}[A-Za-z](?![A-Za-z0-9])")
+_SPACED_SEP_RE = re.compile(r"[ .\-_]")
+_NUM_RE = re.compile(r"(?<![A-Za-z0-9])\d+(?![A-Za-z0-9])")
+_LOWER_N_TAG_RE = re.compile(r"<n(\d+)>")
+_OTP_RE = re.compile(r"(?<!\d)\d{6}(?!\d)")
 
 HXXP_RE = re.compile(r"hxxp(s?)://", re.I)
 BRACKET_DOT_RE = re.compile(r"\[+\.+\]+|\(+\.+\)+")
@@ -111,6 +120,16 @@ _COMMON_SHORT = {
     "mom", "bhai", "thanks", "bkash", "regards", "hello", "sorry", "please", "urgent",
 }
 
+VIEW_CONTRACT_COLS = (
+    "text_raw", "text_norm", "text_skel", "n_msgs",
+    "first_msg", "last_msg", "mid_msgs",
+    "first_msg_len", "mean_msg_len", "max_msg_len",
+    "has_url", "n_urls",
+    "digit_ratio", "upper_ratio", "script_latin_ratio", "script_bangla_ratio",
+    "emoji_count", "excl_count", "qmark_count", "asks_question",
+    "has_otp_like_number", "noise_ratio",
+)
+
 
 def _is_missing(text):
     if text is None:
@@ -118,6 +137,17 @@ def _is_missing(text):
     if isinstance(text, float) and math.isnan(text):
         return True
     return str(text).strip() == ""
+
+
+def to_skeleton(clean: str) -> str:
+    """Cleaned text -> lowercase skeleton with spaced letters re-joined and digit runs as <N#>."""
+    if not clean:
+        return ""
+    t = _SPACED_RE.sub(lambda m: _SPACED_SEP_RE.sub("", m.group(0)), clean)
+    t = t.lower()
+    # Keep existing <N#> tags uppercase so to_skeleton is strictly idempotent
+    t = _LOWER_N_TAG_RE.sub(r"<N\1>", t)
+    return _NUM_RE.sub(lambda m: f"<N{len(m.group(0))}>", t)
 
 
 def _normalise_url_obfuscation(text):
@@ -141,6 +171,12 @@ def _decode_leet_token(match):
         return tok
     if not LEET_ANY_RE.search(tok):
         return tok
+    # Case-independent guard for TrxIDs / reference codes (e.g. 9K4L2M1X / 9k4l2m1x, A4B1C7)
+    if NON_LEET_DIGIT_RE.search(tok):
+        return tok
+    transitions = sum(tok[i].isdigit() != tok[i - 1].isdigit() for i in range(1, len(tok)))
+    if transitions >= 4:
+        return tok
     n_digits = sum(c.isdigit() for c in tok)
     if tok.isupper() and n_digits >= 2 and not tok.startswith(("P1N", "0TP")):
         return tok
@@ -158,15 +194,13 @@ def _decode_leet_token(match):
         return "".join(out)
 
     if LEET_INNER_RUN_RE.search(tok):
-        if not NON_LEET_DIGIT_RE.search(tok):
-            return LEET_ANY_RE.sub(_replace_match, tok)
-        return LEET_INNER_RUN_RE.sub(_replace_match, tok)
+        return LEET_ANY_RE.sub(_replace_match, tok)
     return tok
 
 
 @lru_cache(maxsize=100_000)
-def _is_noise_lower(t):
-    if t in NOISE_VOCAB:
+def _is_noise_lower(t, use_vocab=True):
+    if use_vocab and t in NOISE_VOCAB:
         return True
     if set(t) == {"x"}:
         return False
@@ -194,11 +228,11 @@ def _is_noise_lower(t):
     return not any(k in t for k in _KEEP_SUBSTRINGS)
 
 
-def is_noise_token(tok):
+def is_noise_token(tok, use_vocab=True):
     """Known noise strings, 0-vowel >=6 char consonant strings, or long gibberish tokens."""
     if len(tok) < 6:
         return False
-    return _is_noise_lower(tok.lower())
+    return _is_noise_lower(tok.lower(), use_vocab=use_vocab)
 
 
 def _is_gibberish_token(w):
@@ -210,7 +244,6 @@ def _is_gibberish_token(w):
         return True
     if _GIBBERISH_CLUSTER_RE.search(w):
         return True
-    # Trailing 3+ consonant cluster only if NOT a common English plural/past/suffix ending
     if re.search(r"[bcdfghjklmnpqrstvwxz]{3,}$", w) and not _STD_ENDING_RE.search(w):
         return True
     return len(w) >= 7 and (vowels / len(w)) < 0.18
@@ -352,11 +385,12 @@ def clean_message(msg, strip_emojis=True):
 
 
 def preprocess(text):
-    """Raw record -> dict with cleaned views, conversation turns, and structural features."""
+    """Raw record -> dict with cleaned views, skeleton, conversation turns, and structural features."""
     if _is_missing(text):
         return {
             "clean": "",
             "preserved": "",
+            "skel": "",
             "first_msg": "",
             "last_msg": "",
             "n_messages": 0,
@@ -406,8 +440,9 @@ def preprocess(text):
     delim = f" {config.DELIMITER} "
     clean = delim.join(clean_parts)
     preserved = delim.join(pres_parts) if had_emoji else clean
+    skel = to_skeleton(clean)
     body = " ".join(body_parts)
-    n_messages = len(clean_parts) if clean_parts else 1
+    n_messages = len(raw_msgs)
     first_msg = clean_parts[0] if clean_parts else ""
     last_msg = clean_parts[-1] if clean_parts else ""
 
@@ -425,6 +460,7 @@ def preprocess(text):
     return {
         "clean": clean,
         "preserved": preserved,
+        "skel": skel,
         "first_msg": first_msg,
         "last_msg": last_msg,
         "n_messages": n_messages,
@@ -466,13 +502,38 @@ def preprocess_frame(df, log_every=0):
 
 
 def build_views(df, log_every=0):
-    """ARCHITECTURE.md §4 contract wrapper adding text_raw, text_norm, text_skel, and structure feats."""
+    """ARCHITECTURE.md §4 22-column contract wrapper."""
     out = preprocess_frame(df, log_every=log_every)
-    out["text_raw"] = df["text"].astype(str)
-    out["text_norm"] = out["preserved"]
-    out["text_skel"] = out["clean"].str.lower()
+    out["text_raw"] = df["text"].fillna("").astype(str)
+    out["text_norm"] = out["preserved"].fillna("")
+    out["text_skel"] = out["skel"].fillna("")
     out["n_msgs"] = out["n_messages"]
+
+    msgs = out["text_norm"].str.split(r"\s*\|\|\|\s*")
+    n = out["text_norm"].str.len().clip(lower=1)
+    out["mid_msgs"] = msgs.map(lambda m: " ||| ".join(m[1:-1]))
+    out["first_msg_len"] = out["first_msg"].str.len()
+    out["mean_msg_len"] = msgs.map(lambda m: sum(map(len, m)) / len(m))
+    out["max_msg_len"] = msgs.map(lambda m: max(map(len, m)))
+    out["digit_ratio"] = out["text_norm"].str.count(r"\d") / n
+    out["upper_ratio"] = out["text_norm"].str.count(r"[A-Z]") / n
+    out["script_latin_ratio"] = out["text_norm"].str.count(r"[A-Za-z]") / n
+    out["excl_count"] = out["text_raw"].str.count("!")
+    out["qmark_count"] = out["text_raw"].str.count(r"\?")
+    out["asks_question"] = out["qmark_count"] > 0
+    out["has_otp_like_number"] = out["text_norm"].str.contains(_OTP_RE, na=False)
     return out
+
+
+def audit_heuristic_noise(texts, top_k=50):
+    """Return top_k tokens flagged purely by the heuristic path (excluding NOISE_VOCAB)."""
+    cnt = Counter(
+        w.lower()
+        for x in texts
+        for w in WORD_RE.findall(normalise_chars(x))
+        if is_noise_token(w, use_vocab=False) and w.lower() not in NOISE_VOCAB
+    )
+    return cnt.most_common(top_k)
 
 
 def main():
@@ -481,17 +542,25 @@ def main():
     pd.set_option("display.max_colwidth", 120)
 
     s = build_views(load_sample())
-    t = build_views(load_test(), log_every=100_000)
+    test_df = load_test()
+    t0 = time.perf_counter()
+    t = build_views(test_df, log_every=100_000)
+    elapsed = time.perf_counter() - t0
 
+    print(f"500k build_views runtime: {elapsed:.1f}s ({elapsed / 60:.2f} min)")
     print("sample noise-only:", int(s.noise_only.sum()), "| test noise-only:", int(t.noise_only.sum()))
     print("test rows with noise tokens removed:", f"{(t.n_noise_tokens > 0).mean():.2%}")
     print("unique template keys in test:", t.template_key.nunique())
+
+    print("\n--- top 50 heuristic-flagged tokens (excluding NOISE_VOCAB; hand-check precision) ---")
+    print(audit_heuristic_noise(test_df["text"].head(100_000), top_k=50))
 
     print("\n--- sample before/after (rows with noise, lookalikes, or Bangla digits) ---")
     mask = (s.n_noise_tokens > 0) | s.had_lookalike | s.had_zero_width | s.noise_only | (s.script_bangla_ratio > 0)
     for _, r in s[mask].head(10).iterrows():
         print("RAW  :", r.text[:130])
-        print("CLEAN:", r.clean[:130], f"| noise_ratio={r.noise_ratio:.2f} noise_only={r.noise_only}\n")
+        print("CLEAN:", r.clean[:130])
+        print("SKEL :", r.skel[:130], f"| noise_ratio={r.noise_ratio:.2f} noise_only={r.noise_only}\n")
 
 
 if __name__ == "__main__":

@@ -1,13 +1,15 @@
-"""Fast unit tests for Stage 2 preprocessing & views contract."""
+"""Fast unit tests for Stage 2 preprocessing & 22-column views contract."""
 import unittest
 
 from src.data_loader import load_sample
 from src.preprocessing import (
     NOISE_VOCAB,
+    VIEW_CONTRACT_COLS,
     build_views,
     is_noise_token,
     normalise_chars,
     preprocess,
+    to_skeleton,
 )
 
 
@@ -18,13 +20,27 @@ class TestPreprocessing(unittest.TestCase):
             "mnbvcx Your bKash P1N will expire today!! 🎁",
             "Aarong: ne4r357 OUTLET +880 017XXXXXX73 TrxID 9K4L2M1X",
             "র\u200d্যা\u200bব অফার ২০% ছাড়",
+            "Please v.e.r.i.f.y OTP 482913 now",
         ]
         for text in samples:
-            once = preprocess(text)["clean"]
-            twice = preprocess(once)["clean"]
-            self.assertEqual(once, twice)
+            p1 = preprocess(text)
+            p2 = preprocess(p1["clean"])
+            self.assertEqual(p1["clean"], p2["clean"])
             n_once = normalise_chars(text)
             self.assertEqual(n_once, normalise_chars(n_once))
+            # Skeleton idempotence both directly and through preprocess()
+            self.assertEqual(p1["skel"], to_skeleton(p1["skel"]))
+            self.assertEqual(p1["skel"], preprocess(p1["skel"])["skel"])
+
+    def test_cyrillic_and_leet_rules(self):
+        self.assertEqual(preprocess("Vеrify")["clean"], "Verify")
+        self.assertEqual(preprocess("0TP is 0")["clean"], "OTP is 0")
+
+    def test_skeleton_spaced_letters_and_digit_shapes(self):
+        self.assertEqual(preprocess("v.e.r.i.f.y")["skel"], "verify")
+        self.assertEqual(preprocess("v e r i f y")["skel"], "verify")
+        self.assertEqual(preprocess("OTP 482913")["skel"], "otp <N6>")
+        self.assertEqual(to_skeleton("OTP 482913"), "otp <N6>")
 
     def test_preserves_delimiter_bangla_and_digits(self):
         conv = "S: আপনার পার্সেল ৫০ টাকা ||| R: ২০% ছাড় র\u200d্যাব"
@@ -34,6 +50,10 @@ class TestPreprocessing(unittest.TestCase):
         self.assertIn("20%", out["clean"])
         self.assertIn("র\u200d্যা", out["clean"])
         self.assertNotIn("\u200b", out["clean"])
+        self.assertEqual(out["n_messages"], 2)
+
+    def test_n_messages_counts_raw_turns_even_if_noise(self):
+        out = preprocess("Hello ||| zzqwpo")
         self.assertEqual(out["n_messages"], 2)
 
     def test_zero_width_and_nonempty(self):
@@ -52,7 +72,6 @@ class TestPreprocessing(unittest.TestCase):
             self.assertTrue(preprocess(bad)["noise_only"], f"{bad!r} should be noise_only")
 
     def test_noise_vocab_compliance(self):
-        # Every token in NOISE_VOCAB must come from the problem statement or sample.csv
         sample_text = " ".join(load_sample()["text"].str.lower().tolist())
         for tok in NOISE_VOCAB:
             self.assertTrue(
@@ -62,17 +81,18 @@ class TestPreprocessing(unittest.TestCase):
         self.assertFalse(is_noise_token("bkash"))
         self.assertTrue(is_noise_token("wkrjfejejrn"))
 
-    def test_build_views_contract(self):
-        df = load_sample().head(5)
+    def test_build_views_22_column_contract(self):
+        df = load_sample().head(8)
         v = build_views(df)
-        expected = {
-            "text_raw", "text_norm", "text_skel", "n_msgs",
-            "first_msg", "last_msg", "has_url", "n_urls",
-            "noise_ratio", "script_bangla_ratio", "emoji_count",
-        }
-        self.assertTrue(expected.issubset(set(v.columns)))
+        self.assertEqual(len(VIEW_CONTRACT_COLS), 22)
+        missing = set(VIEW_CONTRACT_COLS) - set(v.columns)
+        self.assertEqual(missing, set(), f"Missing view columns: {missing}")
         self.assertEqual(len(v), len(df))
         self.assertTrue((v["id"].values == df["id"].values).all())
+        # Verify OTP-like number flag on explicit 6-digit input
+        otp_v = build_views(df.iloc[[0]].assign(text="Your OTP 482913 expires soon!"))
+        self.assertTrue(bool(otp_v["has_otp_like_number"].iloc[0]))
+        self.assertEqual(otp_v["text_skel"].iloc[0], "your otp <N6> expires soon!")
 
 
 if __name__ == "__main__":

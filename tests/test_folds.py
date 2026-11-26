@@ -1,14 +1,17 @@
-"""Fast unit tests for Stage 3 folds, sparse grouping, leave-cluster-out, and Set A/B augmentation."""
+"""Fast unit tests for Stage 3 folds, grouping, leave-cluster-out, and Set A/B augmentation."""
 import random
+import re
 import unittest
 
 import pandas as pd
 
+from src import config
 from src.augment import corrupt, expand
 from src.data_loader import load_sample
 from src.training.cross_validation import (
     assign_groups,
     build_fold_table,
+    get_folds,
     iter_saved_folds,
     leave_cluster_out_folds,
     load_or_create_folds,
@@ -16,51 +19,86 @@ from src.training.cross_validation import (
 
 
 class TestFoldsAndAugment(unittest.TestCase):
-    def test_no_group_leakage_across_repeats(self):
+    def test_no_group_leakage_every_row_once_and_all_classes_present(self):
         df = load_sample()
         folds = build_fold_table(df)
-        for rep in range(3):
+        all_classes = set(df["label"].unique())
+
+        for rep in range(config.N_REPEATS):
             col = f"fold_r{rep}"
             split_groups = (folds.groupby("group")[col].nunique() > 1).sum()
             self.assertEqual(split_groups, 0, f"Leakage in {col}")
 
-        # Augmented rows inherit source group and never cross folds
+            seen = []
+            for tr, va in iter_saved_folds(folds, col):
+                self.assertEqual(set(tr).intersection(set(va)), set())
+                self.assertEqual(set(df.iloc[va]["label"].unique()), all_classes)
+                seen.extend(va.tolist())
+            self.assertEqual(sorted(seen), list(range(len(df))))
+
         aug = expand(df.head(10), k=2, seed=42, ops="A")
         self.assertTrue((aug["source"] == "aug").all())
-        self.assertTrue("group_id" in aug.columns)
+        self.assertIn("group_id", aug.columns)
         recombined = pd.concat([df.head(10).assign(group_id=df.head(10)["id"]), aug], ignore_index=True)
-        # Grouping by group_id keeps all variants with source
         self.assertEqual(recombined["group_id"].nunique(), 10)
 
-    def test_sparse_assign_groups_keeps_near_duplicates_together(self):
+    def test_same_seed_rebuilds_identical_table_and_get_folds_contract(self):
+        df = load_sample()
+        t1 = build_fold_table(df, seed=config.SEED)
+        t2 = build_fold_table(df, seed=config.SEED)
+        self.assertTrue(t1.equals(t2))
+
+        pairs = get_folds(df, n_repeats=config.N_REPEATS)
+        self.assertEqual(len(pairs), config.N_REPEATS * config.N_SPLITS)
+        for tr, va in pairs:
+            self.assertEqual(set(tr).intersection(set(va)), set())
+            self.assertEqual(len(tr) + len(va), len(df))
+
+    def test_sparse_assign_groups_keeps_near_duplicates_and_shared_first_msg_together(self):
         df = load_sample().head(6).copy()
+        base_text = str(df.iloc[0]["text"])
+
         dup = df.iloc[[0]].copy()
         dup["id"] = 99991
+
+        # Robust near-duplicate: swap a digit (if present) and delete one interior character
+        near_text = re.sub(r"\d", lambda m: str((int(m.group(0)) + 1) % 10), base_text, count=1)
+        mid = max(1, len(near_text) // 2)
+        near_text = near_text[:mid] + near_text[mid + 1:]
         near = df.iloc[[0]].copy()
         near["id"] = 99992
-        near["text"] = near["text"].iloc[0].replace("29 Nov", "30 Dec").replace("shipped", "shpped")
-        comb = pd.concat([df, dup, near], ignore_index=True)
+        near["text"] = near_text
+
+        # Shared first message (>= 20 chars) with completely different follow-up turns
+        c1 = df.iloc[[0]].copy()
+        c1["id"] = 99993
+        c1["text"] = "S: Hello your parcel delivery needs confirmation ||| R: What parcel?"
+        c2 = df.iloc[[0]].copy()
+        c2["id"] = 99994
+        c2["text"] = "S: Hello your parcel delivery needs confirmation ||| R: Send tracking link right now pls"
+
+        comb = pd.concat([df, dup, near, c1, c2], ignore_index=True)
         g = assign_groups(comb)
         self.assertEqual(g.iloc[0], g.iloc[6])
         self.assertEqual(g.iloc[0], g.iloc[7])
+        self.assertEqual(g.iloc[8], g.iloc[9])
 
     def test_saved_folds_deterministic_reload(self):
         df = load_sample()
         f1 = load_or_create_folds(df)
         f2 = load_or_create_folds(df)
         self.assertTrue(f1.equals(f2))
-        for tr, va in iter_saved_folds(f1, "fold_r0"):
-            self.assertEqual(set(tr).intersection(set(va)), set())
-            self.assertEqual(len(tr) + len(va), len(df))
 
-    def test_leave_cluster_out_disjoint(self):
+    def test_leave_cluster_out_disjoint_and_all_classes_in_training(self):
         df = load_sample()
         folds = build_fold_table(df)
+        all_classes = set(df["label"].unique())
         seen_val = []
         for tr, va, cid in leave_cluster_out_folds(df, folds):
             self.assertEqual(set(tr).intersection(set(va)), set())
             self.assertEqual(folds.iloc[va]["cluster"].nunique(), 1)
             self.assertEqual(int(folds.iloc[va]["cluster"].iloc[0]), cid)
+            self.assertEqual(set(df.iloc[tr]["label"].unique()), all_classes)
             seen_val.extend(va.tolist())
         self.assertEqual(sorted(seen_val), list(range(len(df))))
 

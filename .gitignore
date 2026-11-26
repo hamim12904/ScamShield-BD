@@ -20,3 +20,7 @@ outputs/
 # OS
 .DS_Store
 Thumbs.db
+
+!outputs/
+!outputs/validation_results/
+!outputs/validation_results/folds.csv
