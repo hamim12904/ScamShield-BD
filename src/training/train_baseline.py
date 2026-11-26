@@ -67,7 +67,6 @@ class Baseline:
 
 def main():
     df = load_sample()
-    df["group"] = df["id"]
     res, summary = cross_validate(df, lambda tr, va: Baseline().fit(tr).predict(va), n_repeats=3)
     print(summary)
     res.to_csv(config.VALIDATION_DIR / "baseline_cv.csv", index=False)
