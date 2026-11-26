@@ -91,7 +91,8 @@
 | Exp | Date/time | Change vs previous | F_A | F_B | F_C | Cal (1−Brier) | S_hat | Robust-slice F1 | Notes |
 |---|---|---|---|---|---|---|---|---|---|
 | E001 | 27 Nov 02:32 | Baseline word+char TF-IDF + LR | 0.524 | 0.291 | 0.374 | 0.761 | — | 0.482 | 5x3 grouped CV (`folds.csv`), no aug, C=5 |
-| E015 | 27 Nov 02:45 | `word+char` only, `C=5`, `n_aug=5` (Set A) + Task B thresholds + `postprocess` | 0.574 | 0.578 | 0.475 | 0.780 | 0.498 | 0.538 | `F_domain=0.316`; thresholds `[0.31,0.39,0.29,0.26,0.4,0.26]` |
+| E015 | 27 Nov 02:45 | `word+char` only, `C=5`, `n_aug=5` (Set A) + Task B thresholds + `postprocess` | 0.574 | 0.578 | 0.475 | 0.782 | 0.498 | 0.538 | `F_domain=0.316`; thresholds `[0.31,0.39,0.29,0.26,0.4,0.26]` |
+| E018 | 27 Nov 03:10 | Phase 3: Blend `0.4·E015(LR) + 0.6·E016(LinearSVC)` + Logistic Calibration | 0.614 | 0.578 | 0.475 | 0.777 | 0.514 | 0.538 | Cal beats const Brier (`0.2228` vs `0.2305`) |
 
 ## 8. Kaggle submission log
 
@@ -99,6 +100,7 @@
 |---|---|---|---|---|---|
 | 1 | 27 Nov 02:32 | `outputs/predictions/submission_E1126_2032.csv` | Baseline (format check, E001) | *(pending upload)* | No |
 | 2 | 27 Nov 03:04 | `outputs/predictions/submission_E1126_2104.csv` | Phase 2 E015 (`word+char`, `n_aug=5`, tuned Task B thresholds, `postprocess.py`) | *(pending upload)* | Candidate A |
+| 3 | 27 Nov 03:29 | `outputs/predictions/submission_E1126_2129.csv` | Phase 3 E018 (`0.4·LR + 0.6·LinearSVC` blend, logistic calibration, Task B thresholds, `postprocess.py`) | *(pending upload)* | Candidate B |
 
 ## 9. Lessons and gotchas
 
@@ -110,19 +112,20 @@
 ## 10. Handoff notes (rewrite at the end of every session)
 
 ```
-Last updated: 27 Nov 02:47 BST by B
+Last updated: 27 Nov 03:10 BST by B
 State:
-  DONE  — Phase 1: E001 baseline submitted/validated (submission_E1126_2032.csv).
-  DONE  — Phase 2 T-020: augment.py Set A/B tested (tests/test_augment.py, 5 passed) & integrated into training folds.
-  DONE  — Phase 2 T-021: 16-experiment tuning sweep (E002-E017) on saved 5x3 grouped CV.
-          Winner E015 (word+char only, C=5, n_aug=5): F_A 0.524->0.574, F_rob 0.482->0.538, F_dom 0.231->0.316, S_hat 0.423->0.498.
-  DONE  — Phase 2 T-024: postprocess.py (4 rules at 100% support in sample.csv) + Task B threshold tuning (F_B 0.416->0.578).
-  DONE  — prediction.py updated with E015 + Task B thresholds + postprocess.py; OOF saved at outputs/oof/E015_m1.npz.
-  PENDING — Phase 3: T-030 ensemble.py (waiting for C's Model 2 OOF outputs/oof/*_m2.npz), T-031 calibration.py.
+  DONE  — Phase 1 (E001) & Phase 2 (E015) generated and validated.
+  DONE  — Phase 3 T-031: src/evaluation/calibration.py (logistic calibrator + noise shrinkage + constant fallback gate).
+          Beats constant baseline on OOF Brier (E015: 0.2182 vs 0.2365; Blend: 0.2228 vs 0.2305).
+  DONE  — Phase 3 T-030: src/models/ensemble.py extended (tune_blend_weight, model_disagreement).
+          0.4*LR(E015) + 0.6*LinearSVC(E016) boosts OOF F_A from 0.5825 -> 0.6143 (+0.0318).
+  DONE  — prediction.py wired with LR+SVM blend, Task B thresholds, postprocess.py, and logistic calibration.
+  PENDING — Teammate C's Model 2 OOF (*_m2.npz) to blend M1+M2, and Teammate A's handwritten extras.
+  PENDING — Phase 4: T-040/T-041 Candidate A & Candidate B final runs & Kaggle selection.
 Next 3 steps:
-  1. Wait for C's Model 2 OOF (outputs/oof/*_m2.npz) and A's handwritten extras (data/extra/handwritten.py).
-  2. T-030 & T-031: Blend M1 + M2 in ensemble.py and fit/cross-fit calibration.py (must beat constant Brier baseline).
-  3. T-040 & T-041: Generate & submit Candidate A (E015 Model 1) and Candidate B (Ensemble + calibrated).
+  1. Run `python -m src.prediction` to generate E018 (LR+SVM blend + calibrated) submission for Kaggle.
+  2. When C delivers *_m2.npz, run `tune_blend_weight` on M1+M2 and re-fit calibration with OOD signal.
+  3. T-040..T-043: Generate Candidate A and Candidate B, submit both, and manually select 2 finals before 17:30.
 Blockers / questions for teammate:
   - A: build_views() not yet in preprocessing.py; prediction.py falls back to preprocess_frame().
        Once your build_views is merged, update tfidf_features.build_text_dict to use
