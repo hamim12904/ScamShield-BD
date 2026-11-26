@@ -58,6 +58,7 @@
 | D-006 | 26 Nov 23:15 | Interfaces in `ARCHITECTURE.md` §4 are frozen; changes get logged here | Parallel work |
 | D-007 | 26 Nov 23:15 | Select two finals manually: one conservative, one with CV-positive extras | Public LB is only 30%; default selection is by public score |
 | D-008 | 27 Nov 00:20 | Canonical saved folds live in `outputs/validation_results/folds.csv` (unified `fold_r0`..`fold_r2` across Tasks A/B/C + sparse duplicate `group` + `cluster` for leave-cluster-out), instead of `outputs/folds.json` | Single deterministic partition across all models/tasks; OOF arrays saved to `outputs/oof/<exp>_m1.npz` |
+| D-009 | 27 Nov 02:00 | `TfidfBlock` uses dict-based interface (`train_d, test_d` → `csr_matrix`); `build_text_dict(df)` is the bridge from DataFrame to dict | Richer than raw text list: carries text_norm, text_skel, first_msg, last_msg, struct_feats; falls back to `preprocess()` until A delivers `build_views`. B notified A and C. |
 
 ## 5. Findings from EDA `[to be filled by teammate]`
 
@@ -89,13 +90,13 @@
 
 | Exp | Date/time | Change vs previous | F_A | F_B | F_C | Cal (1−Brier) | S_hat | Robust-slice F1 | Notes |
 |---|---|---|---|---|---|---|---|---|---|
-| E001 | | Baseline word+char TF-IDF + LR | | | | | | | |
+| E001 | 27 Nov 02:32 | Baseline word+char TF-IDF + LR | 0.524 | 0.291 | 0.374 | 0.761 | — | 0.482 | 5x3 grouped CV (`folds.csv`), no aug, C=5 |
 
 ## 8. Kaggle submission log
 
 | # | Date/time | File | What changed | Public score | Selected as final? |
 |---|---|---|---|---|---|
-| 1 | | | Baseline (format check) | | |
+| 1 | 27 Nov 02:32 | `outputs/predictions/submission_E1126_2032.csv` | Baseline (format check, E001) | *(pending upload)* | No |
 
 ## 9. Lessons and gotchas
 
@@ -107,13 +108,24 @@
 ## 10. Handoff notes (rewrite at the end of every session)
 
 ```
-Last updated: <date/time BST> by <name>
-State: <what works, what is half-done>
+Last updated: 27 Nov 02:33 BST by B
+State:
+  DONE  — T-001, T-007, T-010: all baseline modules, tests (35 passed), and E001 CV + OOF complete.
+  DONE  — E001 submission generated & validated: outputs/predictions/submission_E1126_2032.csv (500,000 rows, [OK]).
+  PENDING — T-011: upload outputs/predictions/submission_E1126_2032.csv to Kaggle and record public score in §8.
+  PENDING — Phase 2: T-020 (augment.py), T-021 (TF-IDF + C tuning), T-024 (Task B thresholds + postprocess.py).
 Next 3 steps:
-  1.
-  2.
-  3.
+  1. Upload outputs/predictions/submission_E1126_2032.csv to Kaggle (Submission #1) and log public score in MEMORY.md §8.
+  2. T-020: Complete/verify src/augment.py (Set A training, Set B eval) and integrate into training folds.
+  3. T-021: Tune TF-IDF blocks, C grid, and augmentation on saved 5x3 grouped CV.
 Blockers / questions for teammate:
+  - A: build_views() not yet in preprocessing.py; prediction.py falls back to preprocess_frame().
+       Once your build_views is merged, update tfidf_features.build_text_dict to use
+       text_norm, text_skel, first_msg columns from the DataFrame. Notify B by commit.
+  - C: validate_submission.py stub is in tools/; replace with your full version (T-006).
+       Also add pytest>=7.0 to requirements.txt (not in C's scope? cross-request to C).
+  - Cross-team request D-009: A please add text_norm/text_skel/first_msg/last_msg to build_views
+       so B can use richer features (see tfidf_features.build_text_dict for the keys needed).
 Where results live: outputs/validation_results/experiments.csv ; outputs/folds.json ; outputs/predictions/
 ```
 
