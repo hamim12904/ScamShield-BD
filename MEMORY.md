@@ -60,6 +60,7 @@
 | D-007 | 26 Nov 23:15 | Select two finals manually: one conservative, one with CV-positive extras | Public LB is only 30%; default selection is by public score |
 | D-008 | 27 Nov 00:20 | Canonical saved folds live in `outputs/validation_results/folds.csv` (unified `fold_r0`..`fold_r2` across Tasks A/B/C + sparse duplicate `group` + `cluster` for leave-cluster-out), instead of `outputs/folds.json` | Single deterministic partition across all models/tasks; OOF arrays saved to `outputs/oof/<exp>_m1.npz` |
 | D-009 | 27 Nov 02:00 | `TfidfBlock` uses dict-based interface (`train_d, test_d` → `csr_matrix`); `build_text_dict(df)` is the bridge from DataFrame to dict | Richer than raw text list: carries text_norm, text_skel, first_msg, last_msg, struct_feats; falls back to `preprocess()` until A delivers `build_views`. B notified A and C. |
+| D-010 | 27 Nov 05:20 | Zero-shot LLM labeling pipeline in `src/llm_label.py` with SHA-256 caching (`data/extra/llm_labels_v1.jsonl`), calibration gate (F1 >= 0.80), and rule filtering | Augment scarce training data with model predictions from unlabeled test templates per rulebook §5 compliance rules |
 
 ## 5. Findings from EDA (27 Nov, A1; full detail in `outputs/validation_results/eda_report.md`)
 
@@ -172,7 +173,7 @@ Where results live: README.md ; data/extra/handwritten.py ; notebooks/ ; tools/ 
 |---|---|---|---|---|---|
 | scikit-learn, pandas, numpy, scipy | libraries | PyPI | BSD | modelling/data | [ ] |
 | sentence-transformers + sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 | pretrained model | Hugging Face | Apache-2.0 | multilingual dense sentence embeddings for Model 2 and OOD similarity | [x] |
-| LLM API (if used) | hosted API | `<provider/model>` | provider terms | synthetic training data | [ ] |
+| LLM API (if used) | hosted API | Configurable via `.env` (`LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY`) | Provider terms | label unlabeled test templates by code; predictions only | [x] |
 | Hand-written extra examples (84 rows / 14 groups) | `data/extra/handwritten.py` | our own, authored by A from PRD + labeled sample patterns only; zero overlap with test | n/a | optional training augmentation, pending B's grouped-CV check | [x] |
 | Pseudo-labeling on `test.csv` text | method | our code | n/a | semi-supervised (if adopted) | [ ] |
 
