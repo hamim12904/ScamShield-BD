@@ -98,6 +98,7 @@
 | # | Date/time | File | What changed | Public score | Selected as final? |
 |---|---|---|---|---|---|
 | 1 | 27 Nov 02:32 | `outputs/predictions/submission_E1126_2032.csv` | Baseline (format check, E001) | *(pending upload)* | No |
+| 2 | 27 Nov 03:04 | `outputs/predictions/submission_E1126_2104.csv` | Phase 2 E015 (`word+char`, `n_aug=5`, tuned Task B thresholds, `postprocess.py`) | *(pending upload)* | Candidate A |
 
 ## 9. Lessons and gotchas
 
