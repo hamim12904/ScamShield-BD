@@ -31,8 +31,8 @@ ZWNJ_RE = re.compile("\u200c")
 ZWJ_RE = re.compile("\u200d(?!্)|(?<!র)\u200d")
 EMOJI_RE = re.compile("[\U0001F000-\U0001FFFF\u2600-\u27BF\uFE00-\uFE0F]")
 MOJIBAKE_OR_ENTITY_RE = re.compile(r"[ÃÂâð\ufffd]|&(?:amp|lt|gt|quot|apos|nbsp|#\d+);")
-# Preserve masked 'x'/'X' sequences (e.g. 01XXXXXXXXX) and digits (e.g. 5000)
-REPEAT_RE = re.compile(r"(?![xX])([^\W\d_])\1{2,}")
+# Preserve masked 'x'/'X' sequences (e.g. 01XXXXXXXXX), while collapsing stretched 'x' inside words (exxxxxtra -> exxtra)
+REPEAT_RE = re.compile(r"(?![xX])([^\W\d_])\1{2,}|(?<=[A-WYZa-wyz])([xX])\2{2,}(?=[A-WYZa-wyz])")
 URL_RE = re.compile(
     r"(?:https?://|www\.)[^\s<>\"']+"
     r"|\b[a-z0-9-]+\.(?:com|net|org|bd|co|io|xyz|link|info|top|vip|me|ly|site|click|online|shop|store|live|club|app|icu)\b[^\s<>\"']*",
@@ -52,7 +52,9 @@ NOISE_VOCAB = {
 }
 
 # Rare letter clusters / keyboard-mash patterns used only for whole-message noise_only fallback
-_IMPOSSIBLE_CLUSTER_RE = re.compile(r"q(?!u)|[bcdfghjklmnpqrstvwxz]{4,}|^[bcdfghjklmnpqrstvwxz]{3,}")
+_IMPOSSIBLE_CLUSTER_RE = re.compile(
+    r"q(?!u)|[bcdfghjklmnpqrstvwxz]{4,}|^[bcdfghjklmnpqrstvwxz]{3,}|[bcdfghjklmnpqrstvwxz]{3,}$"
+)
 
 
 def _is_missing(text):
@@ -65,8 +67,8 @@ def _is_missing(text):
 
 def _normalise_url_obfuscation(text):
     t = re.sub(r"hxxp(s?)://", r"http\1://", text, flags=re.I)
-    t = t.replace("[.]", ".").replace("(.)", ".")
-    t = re.sub(r"(?<=[A-Za-z0-9-])\[\](?=[A-Za-z0-9-])", ".", t)
+    t = re.sub(r"\[+\.+\]+|\(+\.+\)+", ".", t)
+    t = re.sub(r"(?<=[A-Za-z0-9-])\[+\.?\]+(?=[A-Za-z0-9-])", ".", t)
     return t
 
 
@@ -99,45 +101,45 @@ def is_noise_token(tok):
     if t in NOISE_VOCAB:
         return True
     n = len(t)
-    has_y_or_v = False
-    vowels = 0
+    vowels_y = 0
     run = 0
     longest_run = 0
     for ch in t:
-        if ch in "aeiou":
-            vowels += 1
-            has_y_or_v = True
+        if ch in "aeiouy":
+            vowels_y += 1
             run = 0
         else:
-            if ch == "y":
-                has_y_or_v = True
             run += 1
             if run > longest_run:
                 longest_run = run
-    if n >= 6 and not has_y_or_v:
+    if n >= 6 and vowels_y == 0:
         return True
     if n < 8:
         return False
-    return (vowels / n) < 0.15 or longest_run >= 6
+    return (vowels_y / n) < 0.12 or longest_run >= 6
 
 
-def _is_gibberish_only(body):
+def _is_gibberish_only(body, n_noise_removed=0):
     """Conservative whole-record check for short random-letter noise rows without Bangla, digits, or URLs."""
     if re.search(rf"[{BANGLA}0-9]", body) or URL_RE.search(body):
         return False
     tokens = WORD_RE.findall(body.lower())
     if not tokens or len(tokens) > 3:
         return False
-    if any(len(w) <= 3 for w in tokens):
-        # Short real tokens like 'ok', 'hi', 'ki' shouldn't be flagged unless all tokens are suspicious
-        if any(w in {"ok", "hi", "ki", "na", "no", "yes", "call", "pay", "pin", "otp", "din", "jan"} for w in tokens):
-            return False
+    common_short = {"ok", "hi", "ki", "na", "no", "yes", "call", "pay", "pin", "otp", "din", "jan", "mom", "bhai"}
+    if any(w in common_short for w in tokens):
+        return False
+    if n_noise_removed > 0 and len(tokens) <= 2 and all(len(w) >= 4 for w in tokens):
+        return True
+    suspicious = 0
     for w in tokens:
         vowels = sum(c in "aeiouy" for c in w)
         if len(w) >= 4 and (vowels == 0 or _IMPOSSIBLE_CLUSTER_RE.search(w) or vowels / len(w) < 0.22):
-            continue
-        return False
-    return True
+            suspicious += 1
+    if suspicious == len(tokens):
+        return True
+    # E.g. 'gzvdiyj yorech' or 'cued prasptozjidkbm' where most characters belong to a gibberish cluster
+    return suspicious > 0 and max(len(w) for w in tokens) >= 7 and len(tokens) <= 2
 
 
 def normalise_chars(text, strip_emojis=True):
@@ -164,7 +166,7 @@ def normalise_chars(text, strip_emojis=True):
         return f" __URL{len(urls) - 1}__ "
 
     t = URL_RE.sub(_stash_url, t)
-    t = REPEAT_RE.sub(r"\1\1", t)                 # freeeee -> free, keeps 5000 and 01XXXXXXXXX
+    t = REPEAT_RE.sub(lambda m: (m.group(1) or m.group(2)) * 2, t)  # freeeee -> freee, keeps 5000 & 01XXXXXXXXX
     t = re.sub(r"([^\w\s])\1{2,}", r"\1", t)      # ]]] -> ]
     t = ALNUM_TOKEN_RE.sub(_decode_leet_token, t) # P1N -> PIN, ne4r357 -> near357, keeps 9K4L2M1X
     for idx, url in enumerate(urls):
@@ -260,13 +262,14 @@ def preprocess(text):
         preserved = clean
 
     body = " ".join(tx for _, tx, _ in parsed_nonempty)
+    n_noise_tokens = sum(p[2] for p in parsed)
     has_letters = bool(re.search(rf"[A-Za-z{BANGLA}]{{2,}}", body))
-    noise_only = (not has_letters) or _is_gibberish_only(body)
+    noise_only = (not has_letters) or _is_gibberish_only(body, n_noise_tokens)
     return {
         "clean": clean,
         "preserved": preserved,
         "n_messages": len(parsed_nonempty),
-        "n_noise_tokens": sum(p[2] for p in parsed),
+        "n_noise_tokens": n_noise_tokens,
         "noise_only": noise_only,                # nothing meaningful left after cleaning
         "raw_len": len(raw),
         "had_lookalike": bool(re.search("[\u0400-\u04FF\u0370-\u03FF]", raw)),
