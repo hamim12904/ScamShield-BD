@@ -80,7 +80,11 @@
 - [?] Class 5 and class 0 both map to techniques `NONE`.
 - [?] Label 0 implies action 0.
 - [?] Noise-only records are labeled class 0 `[?]`.
-- [?] Kaggle GPU is available for embeddings; session time is sufficient for 500k rows.
+- [x] Kaggle GPU is available for embeddings; session time is sufficient for 500k rows.
+  * Benchmark on 10,000 rows of `test.csv` on `paraphrase-multilingual-MiniLM-L12-v2`: 209.79 s (47.7 rows/s on local CPU).
+  * Extrapolated for 500,000 rows on CPU: 174.8 minutes (2.91 hours).
+  * Extrapolated for 500,000 rows on Kaggle GPU (T4/P100 fp16, ~1,000–1,500 rows/s): estimated 5.5–8.5 minutes (well within GPU limits).
+  * `multilingual-e5-base` (~3x heavier) is dropped to preserve comfortable GPU session margins.
 - [?] Daily submission limit resets at 00:00 UTC (06:00 BST).
 - [?] The chosen embedding model(s) can be downloaded in the clean Kaggle/Colab run (internet on).
 
@@ -93,6 +97,7 @@
 | E001 | 27 Nov 02:32 | Baseline word+char TF-IDF + LR | 0.524 | 0.291 | 0.374 | 0.761 | — | 0.482 | 5x3 grouped CV (`folds.csv`), no aug, C=5 |
 | E015 | 27 Nov 02:45 | `word+char` only, `C=5`, `n_aug=5` (Set A) + Task B thresholds + `postprocess` | 0.574 | 0.578 | 0.475 | 0.782 | 0.498 | 0.538 | `F_domain=0.316`; thresholds `[0.31,0.39,0.29,0.26,0.4,0.26]` |
 | E018 | 27 Nov 03:10 | Phase 3: Blend `0.4·E015(LR) + 0.6·E016(LinearSVC)` + Logistic Calibration | 0.614 | 0.578 | 0.475 | 0.777 | 0.514 | 0.538 | Cal beats const Brier (`0.2228` vs `0.2305`) |
+| E020 | 27 Nov 03:57 | Model 2: paraphrase-multilingual-MiniLM-L12-v2 + LR (T-023) | 0.575 | 0.566 | 0.343 | 0.684 | 0.556 | — | 5x3 grouped CV on text_norm embeddings, C=1.0 |
 
 ## 8. Kaggle submission log
 
@@ -112,29 +117,29 @@
 ## 10. Handoff notes (rewrite at the end of every session)
 
 ```
-Last updated: 27 Nov 03:10 BST by B
+Last updated: 27 Nov 03:59 BST by C
 State:
-  DONE  — Phase 1 (E001) & Phase 2 (E015) generated and validated.
-  DONE  — Phase 3 T-031: src/evaluation/calibration.py (logistic calibrator + noise shrinkage + constant fallback gate).
-          Beats constant baseline on OOF Brier (E015: 0.2182 vs 0.2365; Blend: 0.2228 vs 0.2305).
-  DONE  — Phase 3 T-030: src/models/ensemble.py extended (tune_blend_weight, model_disagreement).
-          0.4*LR(E015) + 0.6*LinearSVC(E016) boosts OOF F_A from 0.5825 -> 0.6143 (+0.0318).
-  DONE  — prediction.py wired with LR+SVM blend, Task B thresholds, postprocess.py, and logistic calibration.
-  PENDING — Teammate C's Model 2 OOF (*_m2.npz) to blend M1+M2, and Teammate A's handwritten extras.
-  PENDING — Phase 4: T-040/T-041 Candidate A & Candidate B final runs & Kaggle selection.
-Next 3 steps:
-  1. Run `python -m src.prediction` to generate E018 (LR+SVM blend + calibrated) submission for Kaggle.
-  2. When C delivers *_m2.npz, run `tune_blend_weight` on M1+M2 and re-fit calibration with OOD signal.
-  3. T-040..T-043: Generate Candidate A and Candidate B, submit both, and manually select 2 finals before 17:30.
+  DONE  — T-023: src/features/embedding_features.py implemented with length-sorted batching,
+          L2-normalisation, dynamic padding, GPU fp16 support, and disk caching.
+  DONE  — T-023: Benchmark 10k test rows on paraphrase-multilingual-MiniLM-L12-v2:
+          209.8s (47.7 rows/s on CPU); extrapolated to 2.9h on CPU vs ~6-8 min on Kaggle GPU.
+  DONE  — T-023: max_cosine_to_train implemented with diagonal masking for training cross-fitting.
+  DONE  — T-023: src/training/train_embeddings.py implemented and executed (E020).
+          Saved outputs/oof/E020_m2.npz (keys: ids, repeat, A, B, C, ood_sim, y_a, y_b, y_c, noise_only, noise_ratio, clean_proba_a, clean_proba_b, clean_proba_c, folds).
+          Saved outputs/predictions/E020_m2_test.npz (keys: ids, A, B, C, ood_sim, shape (500000, 6) / (500000,)).
+          Logged E020 to experiments.csv: F_A=0.5748, F_B=0.5663, F_C=0.3428, Cal=0.6835, S_hat=0.5558.
+  DONE  — Added pytest>=7.0 to requirements.txt and verified test suite.
+Next 3 steps for Teammate B:
+  1. Blend M1 (E015/E018) + M2 (E020) using tune_blend_weight with outputs/oof/E020_m2.npz.
+  2. Use ood_sim from outputs/oof/E020_m2.npz as extra_feats in fit_confidence to boost calibration.
+  3. Predict test with blended M1+M2 and generate final submission candidates.
+Next 3 steps for Teammate C:
+  1. Implement tools/make_zip.py (C4) packaging final submission, notebook, .env, and README.
+  2. Assist with clean-run rehearsal of notebook (C3).
+  3. Verify compliance checklist items 7 & 8 and prepare ZIP for upload (S-07, S-08).
 Blockers / questions for teammate:
-  - A: build_views() not yet in preprocessing.py; prediction.py falls back to preprocess_frame().
-       Once your build_views is merged, update tfidf_features.build_text_dict to use
-       text_norm, text_skel, first_msg columns from the DataFrame. Notify B by commit.
-  - C: validate_submission.py stub is in tools/; replace with your full version (T-006).
-       Also add pytest>=7.0 to requirements.txt (not in C's scope? cross-request to C).
-  - Cross-team request D-009: A please add text_norm/text_skel/first_msg/last_msg to build_views
-       so B can use richer features (see tfidf_features.build_text_dict for the keys needed).
-Where results live: outputs/validation_results/experiments.csv ; outputs/folds.json ; outputs/predictions/
+  - C has delivered outputs/oof/E020_m2.npz and outputs/predictions/E020_m2_test.npz. Teammate B is unblocked!
+Where results live: outputs/validation_results/experiments.csv ; outputs/oof/E020_m2.npz ; outputs/predictions/E020_m2_test.npz
 ```
 
 ## 11. Declaration checklist (feeds the notebook's first cells)
@@ -142,7 +147,7 @@ Where results live: outputs/validation_results/experiments.csv ; outputs/folds.j
 | Resource | Type | Source / provider | Licence | Purpose | Declared in notebook? |
 |---|---|---|---|---|---|
 | scikit-learn, pandas, numpy, scipy | libraries | PyPI | BSD | modelling/data | [ ] |
-| sentence-transformers + chosen encoder | pretrained model | Hugging Face | check model card | embeddings | [ ] |
+| sentence-transformers + sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 | pretrained model | Hugging Face | Apache-2.0 | multilingual dense sentence embeddings for Model 2 and OOD similarity | [x] |
 | LLM API (if used) | hosted API | `<provider/model>` | provider terms | synthetic training data | [ ] |
 | Hand-written extra examples | data | our own | n/a | training | [ ] |
 | Pseudo-labeling on `test.csv` text | method | our code | n/a | semi-supervised (if adopted) | [ ] |
