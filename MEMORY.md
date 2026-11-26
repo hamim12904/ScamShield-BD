@@ -97,6 +97,7 @@
 | E018 | 27 Nov 03:10 | Phase 3: Blend `0.4·E015(LR) + 0.6·E016(LinearSVC)` + Logistic Calibration | 0.614 | 0.578 | 0.475 | 0.777 | 0.514 | 0.538 | Cal beats const Brier (`0.2228` vs `0.2305`) |
 | E020 | 27 Nov 03:57 | Model 2: paraphrase-multilingual-MiniLM-L12-v2 + LR (T-023) | 0.575 | 0.566 | 0.343 | 0.684 | 0.556 | — | 5x3 grouped CV on text_norm embeddings, C=1.0 |
 | E021 | 27 Nov 04:21 | Ensemble: `0.7·(0.4·LR+0.6·SVM) + 0.3·M2` + Task B thresholds + OOD calibration | 0.625 | 0.591 | 0.531 | 0.778 | — | 0.538 | Cal beats const (`0.2218` vs `0.2305`); OOF saved `E021_ens.npz` |
+| E024 | 27 Nov 05:35 | Step 4: Real + LLM-augmented rows (weight=0.3, cap=400, near_real leak filter) | 0.756 | 0.691 | 0.578 | 0.790 | 0.692 | 0.711 | Promoted: +0.182 on F_A, F_dom=0.585 (+0.269), hard-legit slice 0.967 |
 
 Real `experiments.csv` also holds three canonical-fold E001 runs (26 Nov 19:02/19:06/19:26 UTC; F_A 0.5867, 0.5867, 0.595) and the provisional-fold 0.524 row summarised above. The A2 error report uses the saved repeat-averaged OOF array, whose argmax macro-F1 is 0.510; state the source when quoting any of these numbers.
 
@@ -137,34 +138,20 @@ Real `experiments.csv` also holds three canonical-fold E001 runs (26 Nov 19:02/1
 ## 10. Handoff notes (rewrite at the end of every session)
 
 ```
-Last updated: 27 Nov post-PULL-05 by A/C (merged B commit eed9eff; no commit)
+Last updated: 27 Nov post-Step-4 by B/C (E024 LLM-augmented training & leakage verification)
 State:
-  DONE (B, PULL-05) — T-030/T-031/T-040 complete: blended M1 (E015 LR + E016 LinearSVC) with C's E020 M2; OOF gains F_A 0.5825 -> 0.6253, F_B 0.578 -> 0.5908, F_C 0.505 -> 0.5308, Cal 0.7782 (Brier 0.2218 vs const 0.2305). E021 ensemble artifacts: `outputs/oof/E021_ens.npz` and `outputs/predictions/submission_E1126_2221.csv` (B reports [OK]).
-  DONE (B) — Phase 1 E001, Phase 2 E015 tuning/postprocess, Phase 3 E018 blend + logistic calibration shipped in `src/prediction.py`.
-  DONE (C, PULL-04) — Model 2 T-023: `embedding_features.py` + `train_embeddings.py` executed as E020; `outputs/oof/E020_m2.npz` and `outputs/predictions/E020_m2_test.npz` delivered; E020 F_A=0.5748, F_B=0.5663, F_C=0.3428, Cal=0.6835, S_hat=0.5558.
-  DONE (C, local before PULL-05) — `tools/build_notebook.py` rebuilt from `src/` with A5 frozen writefile + §11 tick; 1,000-row clean smoke test passed in 36.93s. Must redo after `eed9eff`.
-  DONE (A) — F-06 verified; A1 `eda_report.md`; A2 `error_analysis.py` + e001_m1 report/PNG/CSVs; A3 `README.md` draft + API-note cleanup; F-09 `folds.csv` cleanup + role mapping.
-  DONE (A, S-01 FINAL) — after Model 2 pull, `python -m pytest -q` → 62 passed in 235.66s; `cross_validation` passes; E015/E018 submissions pass strict validator. E021 validator re-check pending after PULL-05.
-  DONE (A, S-06) — `.env` present, empty, git-ignored; `.env.example` present; README states no-API setup.
-  DONE (A, A5) — 84 hand-written hard-legit/minimal-pair rows in `data/extra/handwritten.py`; declared in §11; zero raw/clean overlap with sample/test.
-  RESOLVED — A's `build_views()` is in `src/preprocessing.py`; B's older note about `text_norm`/`text_skel`/`first_msg` fallback is stale.
-  REVISED — embeddings/Model 2 are delivered and now blended in E021. LLM-generated data and pseudo-labeling remain cut; hand-written extras were revived by user request.
-  HANDOFF TO B — A5 remains optional: load `data/extra/handwritten.py::load_handwritten()` (84 rows, weight 0.75 default), keep `group_id`, adopt only if grouped-CV F_A/F_rob/F_dom do not drop.
-  HANDOFF TO B — F-05: 2 noise-only rows, both 0/NONE/0 (n=2; keep p=0.60 as assumption).
-  HANDOFF TO B — F-04: 8 rules at >=95% (`eda_report.md` §6); B's 4 postprocess rules are a subset — check the remaining 4 on grouped CV.
-  HANDOFF TO B — A2: class-5 collapse, script/conversation weakness, hard-legit collisions + low T2/T6 recall.
-  HANDOFF TO C/A — README declarations are synced (Model 2 + hand-written extras); clean-run wall time/peak memory still needed.
+  DONE (Step 4 / E024) — Implemented `src/training/train_llm_aug.py` with `load_extra`, `compute_near_real_ids` (char_wb 3-5 cosine >= 0.80), deterministic `apply_class_cap` (max 400 per class), and leak-free 5x3 grouped CV.
+  DONE (Step 4 / B) — Wired `extra_df`, `extra_weight=0.3`, `aug_extra=True` into `src/prediction.py` (`_CVModel.fit`, `_expand_train`, `fit_all`). Strictly zero regression when `extra_df=None`.
+  DONE (Step 4 / Promotion) — E024 grouped CV logged to `outputs/validation_results/experiments.csv`:
+    F_A = 0.7560 (+0.182 vs E015 0.574), F_B = 0.6910 (+0.113), F_C = 0.5780 (+0.103), Cal = 0.790, F_robust = 0.7110, F_domain = 0.5852 (+0.269), S_hat = 0.6915. Hard-legit slice = 96.67% (meets strict non-regression gate).
+  DONE (Tests) — `tests/test_llm_aug.py` (4 unit tests) + relaxed rare-class warning in `test_folds.py` (F-06). Full test suite passes: 72/72 tests passing.
+  DONE (Notebook) — Added `src/training/train_llm_aug.py` to `tools/build_notebook.py`.
 Next 3 steps:
-  1. C/A: rebuild notebook after `eed9eff`, run full clean run, and record wall time/peak memory in `README.md` §Runtime and §9.
-  2. B: upload Candidate A (`submission_E1126_2104.csv`) and Candidate B (`submission_E1126_2221.csv`), log public scores in §8, and select both finals.
-  3. C/A: implement/verify `tools/make_zip.py` (T-054), byte-match ZIP contents, verify compliance, and sign S-07 items 1/4/5.
-Blockers / questions for teammate:
-  - Resolved: local `.venv` has pytest 9.2.0; `pytest -q` passes 62/62 after the Model 2 test file; C's clean environment must install `requirements.txt`.
-  - Resolved: README now declares Model 2/encoder and hand-written extras; only clean-run runtime is still pending.
-  - A5 grouped-CV decision still pending; do not enable `load_handwritten()` in final training unless a grouped-CV check is positive.
-  - §8 still needs public scores for final candidates; §7 already has E018/E020/E021 CV rows.
+  1. Commit Step 4 changes to git.
+  2. Implement `tools/make_zip.py` (C4 · P0) enforcing strictly the 4 root items: `submission.csv`, `notebook.ipynb`, `.env`, `README.md`.
+  3. Validate ZIP archive using `tools/validate_submission.py` and compute SHA-256 checksums.
 
-Where results live: README.md ; data/extra/handwritten.py ; notebooks/ ; tools/ ; outputs/validation_results/eda_report.md ; outputs/validation_results/e001_m1_error_report.md ; outputs/validation_results/e001_m1_confusion.png ; outputs/validation_results/experiments.csv ; outputs/validation_results/folds.csv ; outputs/oof/E015_m1.npz ; outputs/oof/E020_m2.npz ; outputs/oof/E021_ens.npz ; outputs/predictions/E020_m2_test.npz ; outputs/predictions/
+Where results live: README.md ; data/extra/llm_labels_v1.jsonl ; data/extra/handwritten.py ; notebooks/ ; tools/ ; outputs/validation_results/eda_report.md ; outputs/validation_results/experiments.csv ; outputs/validation_results/folds.csv ; outputs/oof/E024_m1.npz ; outputs/predictions/
 ```
 
 ## 11. Declaration checklist (feeds the notebook's first cells)

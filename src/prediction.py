@@ -9,6 +9,7 @@ import json
 import logging
 import time
 from datetime import datetime, timezone
+from typing import Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -66,7 +67,9 @@ class FittedModel:
         self.calibrator = calibrator
 
 
-def _expand_train(df_labeled: pd.DataFrame, n_aug: int, seed: int) -> tuple:
+def _expand_train(df_labeled: pd.DataFrame, n_aug: int, seed: int,
+                  extra_df: pd.DataFrame = None, extra_weight: float = 0.3,
+                  aug_extra: bool = True) -> tuple:
     """Expand training rows with Set A corruption; return (full_df, sample_weights)."""
     parts = [df_labeled.assign(weight=1.0)]
     for i in range(n_aug):
@@ -74,6 +77,15 @@ def _expand_train(df_labeled: pd.DataFrame, n_aug: int, seed: int) -> tuple:
         w = _AUG_WEIGHTS[i % len(_AUG_WEIGHTS)]
         parts.append(expand(df_labeled, k=1, seed=seed + 100 * (i + 1),
                             level=lvl, ops="A", weight=w))
+    if extra_df is not None and not extra_df.empty:
+        extra_base = extra_df.assign(weight=float(extra_weight))
+        parts.append(extra_base)
+        if aug_extra and n_aug > 0:
+            for i in range(n_aug):
+                lvl = _AUG_LEVELS[i % len(_AUG_LEVELS)]
+                w = _AUG_WEIGHTS[i % len(_AUG_WEIGHTS)] * float(extra_weight) * 0.5
+                parts.append(expand(extra_df, k=1, seed=seed + 200 * (i + 1),
+                                    level=lvl, ops="A", weight=w))
     full_df = pd.concat(parts, ignore_index=True)
     return full_df, full_df["weight"].values.astype(float)
 
@@ -99,14 +111,20 @@ def fit_all(df_labeled: pd.DataFrame,
             svm_C: float = DEFAULT_SVM_C,
             blend_w: float = DEFAULT_BLEND_W,
             task_b_thresholds: list = None,
-            calibrator: dict = None) -> FittedModel:
+            calibrator: dict = None,
+            extra_df: pd.DataFrame = None,
+            extra_weight: float = 0.3,
+            aug_extra: bool = True) -> FittedModel:
     """Fit TF-IDF + all task heads on labeled data (+ Set A augmentation).
 
     df_labeled:        DataFrame with text, label, techniques, action
     df_test:           optional DataFrame with text — used only for unsupervised TF-IDF IDF
+    extra_df:          optional DataFrame with external/LLM labeled rows
     """
     config.set_seed(seed)
-    full_train, weights = _expand_train(df_labeled, n_aug=n_aug, seed=seed)
+    full_train, weights = _expand_train(df_labeled, n_aug=n_aug, seed=seed,
+                                        extra_df=extra_df, extra_weight=extra_weight,
+                                        aug_extra=aug_extra)
 
     train_d = build_text_dict(full_train)
     train_d["struct_feats"] = None
@@ -215,14 +233,43 @@ class _CVModel:
     def __init__(self, seed: int = config.SEED,
                  n_aug: int = DEFAULT_N_AUG,
                  C: float = DEFAULT_C,
-                 model_type: str = "lr"):
+                 model_type: str = "lr",
+                 extra_df: pd.DataFrame = None,
+                 extra_weight: float = 0.3,
+                 aug_extra: bool = True,
+                 all_real_ids: Sequence[int] = None):
         self.seed = seed
         self.n_aug = n_aug
         self.C = C
         self.model_type = model_type
+        self.extra_df = extra_df
+        self.extra_weight = extra_weight
+        self.aug_extra = aug_extra
+        self.all_real_ids = all_real_ids
 
     def fit(self, train: pd.DataFrame) -> "_CVModel":
-        full_train, weights = _expand_train(train, n_aug=self.n_aug, seed=self.seed)
+        safe_extras = None
+        if self.extra_df is not None and not self.extra_df.empty:
+            if self.all_real_ids is not None:
+                val_ids = set(self.all_real_ids) - set(train["id"])
+            else:
+                val_ids = set()
+
+            if val_ids and "near_real_ids" in self.extra_df.columns:
+                def _safe(row):
+                    near = row.get("near_real_ids")
+                    if near is None or (isinstance(near, float) and np.isnan(near)):
+                        return True
+                    return not (set(near) & val_ids)
+
+                safe_extras = self.extra_df[self.extra_df.apply(_safe, axis=1)].copy()
+            else:
+                safe_extras = self.extra_df.copy()
+
+        full_train, weights = _expand_train(
+            train, n_aug=self.n_aug, seed=self.seed,
+            extra_df=safe_extras, extra_weight=self.extra_weight, aug_extra=self.aug_extra
+        )
         train_d = build_text_dict(full_train)
         train_d["struct_feats"] = None
         self.block = TfidfBlock(use_msg_blocks=False)

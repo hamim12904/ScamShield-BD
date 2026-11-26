@@ -20,6 +20,7 @@ outputs/
 # OS
 .DS_Store
 Thumbs.db
+*.pdf
 
 !outputs/
 !outputs/validation_results/
