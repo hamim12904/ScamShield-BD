@@ -19,12 +19,19 @@ def find_data_dir() -> Path:
     """Search for the data directory containing sample.csv (works locally and on Kaggle)."""
     candidates = [
         ROOT / "data",
-        Path("/kaggle/input"),
+        ROOT.parent / "data",
+        Path("..") / "data",
         Path(".") / "data",
+        Path("/kaggle/input"),
     ]
     for c in candidates:
         if (c / "sample.csv").exists():
             return c
+    kaggle_input = Path("/kaggle/input")
+    if kaggle_input.exists():
+        for sub in kaggle_input.iterdir():
+            if sub.is_dir() and (sub / "sample.csv").exists():
+                return sub
     return ROOT / "data"   # default; loader will raise a clear error if missing
 
 
