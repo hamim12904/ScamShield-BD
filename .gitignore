@@ -1,0 +1,22 @@
+# environment
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.vscode/
+
+# secrets (the final ZIP needs .env, but never commit real keys)
+.env
+
+# data and generated outputs
+data/test.csv
+data/sample_submission.csv
+outputs/
+*.npy
+*.joblib
+*.pkl
+*.zip
+
+# OS
+.DS_Store
+Thumbs.db
