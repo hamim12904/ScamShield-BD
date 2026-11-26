@@ -60,7 +60,7 @@ def _is_missing(text):
         return True
     if isinstance(text, float) and math.isnan(text):
         return True
-    return False
+    return str(text).strip() == ""
 
 
 def _normalise_url_obfuscation(text):
@@ -80,7 +80,15 @@ def _decode_leet_token(match):
     n_digits = sum(c.isdigit() for c in tok)
     if tok.isupper() and n_digits >= 2 and not tok.startswith(("P1N", "0TP")):
         return tok
-    return LEET_INNER_RE.sub(lambda m: LEET_MAP[m.group()], tok)
+
+    def _sub(m):
+        ch = LEET_MAP[m.group()]
+        start = m.start()
+        prev_up = start > 0 and tok[start - 1].isupper()
+        next_up = start + 1 < len(tok) and tok[start + 1].isupper()
+        return ch.upper() if (prev_up and next_up) else ch
+
+    return LEET_INNER_RE.sub(_sub, tok)
 
 
 def is_noise_token(tok):
@@ -90,13 +98,27 @@ def is_noise_token(tok):
         return False
     if t in NOISE_VOCAB:
         return True
-    if len(t) >= 6 and not any(c in "aeiouy" for c in t):
+    n = len(t)
+    has_y_or_v = False
+    vowels = 0
+    run = 0
+    longest_run = 0
+    for ch in t:
+        if ch in "aeiou":
+            vowels += 1
+            has_y_or_v = True
+            run = 0
+        else:
+            if ch == "y":
+                has_y_or_v = True
+            run += 1
+            if run > longest_run:
+                longest_run = run
+    if n >= 6 and not has_y_or_v:
         return True
-    if len(t) < 8:
+    if n < 8:
         return False
-    vowel_ratio = sum(c in "aeiou" for c in t) / len(t)
-    longest_run = max(len(r) for r in re.findall(r"[^aeiou]+", t) or [""])  # y counts as a consonant
-    return vowel_ratio < 0.15 or longest_run >= 6
+    return (vowels / n) < 0.15 or longest_run >= 6
 
 
 def _is_gibberish_only(body):
