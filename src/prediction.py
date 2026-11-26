@@ -1,10 +1,11 @@
 """End-to-end pipeline: fit on all labeled data, predict test, write submission.
 
-Owned by Teammate B (T-010, updated in Phase 2 E015 and Phase 3 T-030/T-031).
+Owned by Teammate B (T-010, Phase 2 E015, Phase 3 T-030/T-031 E021 M1+M2 ensemble).
 
 Usage:
     python -m src.prediction
 """
+import json
 import logging
 import time
 from datetime import datetime, timezone
@@ -17,6 +18,8 @@ from src.augment import expand
 from src.data_loader import (load_sample, load_submission_template, load_test,
                              techniques_to_multihot)
 from src.evaluation.calibration import apply as apply_calibration, fit_confidence
+from src.evaluation.metrics import (log_experiment, macro_f1_multiclass,
+                                    macro_f1_techniques, s_hat)
 from src.features.tfidf_features import TfidfBlock, build_text_dict
 from src.models.ensemble import blend, model_disagreement, tune_blend_weight
 from src.models.task_a import TaskAHead
@@ -25,7 +28,7 @@ from src.models.task_c import TaskCHead
 from src.postprocess import apply_rules_batch, tune_task_b_thresholds
 from src.preprocessing import preprocess
 from src.submission import build
-from src.training.cross_validation import cross_validate
+from src.training.cross_validation import cross_validate, leave_cluster_out_cv
 
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO,
@@ -33,7 +36,7 @@ logging.basicConfig(level=logging.INFO,
 
 CHUNK = 50_000   # rows per prediction chunk to bound memory
 
-# Promoted Phase 2 + 3 config: word+char TF-IDF, Set A n_aug=5, LR+SVM blend, calibrated
+# Promoted config: word+char TF-IDF, Set A n_aug=5, LR+SVM+M2 blend, calibrated
 _AUG_LEVELS = ("light", "medium", "heavy")
 _AUG_WEIGHTS = (1.0, 0.8, 0.5)
 DEFAULT_N_AUG = 5
@@ -133,17 +136,24 @@ def fit_all(df_labeled: pd.DataFrame,
                        head_a_svm=head_a_svm, blend_w=blend_w, calibrator=calibrator)
 
 
-def predict_df(df_text: pd.DataFrame, fitted: FittedModel) -> pd.DataFrame:
+def predict_df(df_text: pd.DataFrame,
+               fitted: FittedModel,
+               m2_test: dict = None,
+               w_m1_a: float = 0.7,
+               w_m1_b: float = 0.3,
+               w_m1_c: float = 0.4) -> pd.DataFrame:
     """Predict on arbitrary new text; works on any input (empty, noise-only, conversations).
 
     df_text: DataFrame with 'id' and 'text' columns
     fitted:  FittedModel from fit_all()
+    m2_test: optional dict/npz with Model 2 test arrays ('A', 'B', 'C', 'ood_sim')
     Returns: 5-column submission DataFrame
     """
     all_preds = []
     n = len(df_text)
     for start in range(0, n, CHUNK):
-        chunk = df_text.iloc[start:start + CHUNK].copy()
+        end = min(start + CHUNK, n)
+        chunk = df_text.iloc[start:end].copy()
         d     = build_text_dict(chunk)
         d["struct_feats"] = None
         X     = fitted.block.transform(d)
@@ -151,29 +161,48 @@ def predict_df(df_text: pd.DataFrame, fitted: FittedModel) -> pd.DataFrame:
         proba_lr = fitted.head_a.predict_proba(X)
         if fitted.head_a_svm is not None:
             proba_svm = fitted.head_a_svm.predict_proba(X)
-            proba_a = blend([proba_lr, proba_svm], weights=[fitted.blend_w, 1.0 - fitted.blend_w])
+            m1_a = blend([proba_lr, proba_svm], weights=[fitted.blend_w, 1.0 - fitted.blend_w])
             dis = model_disagreement(proba_lr, proba_svm)
         else:
-            proba_a = proba_lr
+            m1_a = proba_lr
             dis = None
 
-        proba_b = fitted.head_b.predict_proba(X)
-        proba_c = fitted.head_c.predict_proba(X)
+        m1_b = fitted.head_b.predict_proba(X)
+        m1_c = fitted.head_c.predict_proba(X)
+
+        if m2_test is not None:
+            m2_a = np.asarray(m2_test["A"][start:end], dtype=float)
+            m2_b = np.asarray(m2_test["B"][start:end], dtype=float)
+            m2_c = np.asarray(m2_test["C"][start:end], dtype=float)
+            proba_a = blend([m1_a, m2_a], weights=[w_m1_a, 1.0 - w_m1_a])
+            proba_b = blend([m1_b, m2_b], weights=[w_m1_b, 1.0 - w_m1_b])
+            proba_c = blend([m1_c, m2_c], weights=[w_m1_c, 1.0 - w_m1_c])
+            dis = model_disagreement(m1_a, m2_a)
+            ood = np.asarray(m2_test["ood_sim"][start:end], dtype=float)
+        else:
+            proba_a, proba_b, proba_c = m1_a, m1_b, m1_c
+            ood = None
 
         label  = proba_a.argmax(axis=1)
-        tech   = fitted.head_b.predict(X)
+        thr    = np.array(fitted.head_b.thresholds, dtype=float)
+        tech   = (proba_b >= thr).astype(int)
         action = proba_c.argmax(axis=1)
         label, tech, action = apply_rules_batch(label, tech, action, proba_b, proba_c)
 
         if fitted.calibrator is not None:
             nr, no = _noise_stats(chunk["text"])
-            extra = np.column_stack([nr, dis]) if dis is not None else nr[:, None]
+            cols = [nr]
+            if dis is not None:
+                cols.append(dis)
+            if ood is not None:
+                cols.append(ood)
+            extra = np.column_stack(cols)
             conf = apply_calibration(fitted.calibrator, proba_a, extra_feats=extra, noise_only=no)
         else:
             conf = np.clip(proba_a.max(axis=1), *config.CONF_CLIP)
 
         all_preds.append(build(chunk["id"], label, tech, action, conf))
-        log.info("predict_df: %d / %d rows done", min(start + CHUNK, n), n)
+        log.info("predict_df: %d / %d rows done", end, n)
 
     return pd.concat(all_preds, ignore_index=True)
 
@@ -244,7 +273,7 @@ def _cv_oof(df: pd.DataFrame, seed: int = config.SEED,
 # ── Main entrypoint ───────────────────────────────────────────────────────────
 
 def main() -> str:
-    """Fit on all labeled data, run CV, blend LR+SVM, calibrate, predict test, write submission."""
+    """Fit on all labeled data, blend M1+M2 if available, calibrate, predict test, write submission."""
     t0 = time.time()
     df       = load_sample()
     test     = load_test()
@@ -254,41 +283,61 @@ def main() -> str:
              config.N_SPLITS, config.N_REPEATS)
     res_lr, sum_lr, oof_lr = _cv_oof(df, exp_name="E015", C=DEFAULT_C, model_type="lr")
     _, sum_svm, oof_svm    = _cv_oof(df, exp_name="E016", C=DEFAULT_SVM_C, model_type="svm")
-    log.info("LR CV summary:\n%s", sum_lr.to_string())
-    log.info("LinearSVC CV summary:\n%s", sum_svm.to_string())
     res_lr.to_csv(config.VALIDATION_DIR / "baseline_cv.csv", index=False)
 
-    # Blend LR + LinearSVC on OOF
-    from src.evaluation.metrics import macro_f1_multiclass
     y_a = df["label"].values
-    p_lr = oof_lr["clean"]["proba"]
-    p_svm = oof_svm["clean"]["proba"]
-    w_a, fa_blend, p_a_blend = tune_blend_weight(p_lr, p_svm, y_a, macro_f1_multiclass)
-    log.info("OOF Blend (w=%.2f LR + %.2f SVM) F_A = %.4f", w_a, 1 - w_a, fa_blend)
-
-    # Tune Task B thresholds on LR OOF
     Y_true = techniques_to_multihot(df["techniques"])
+    y_c = df["action"].values
     folds_arr = oof_lr["folds"]["fold_r0"].values
-    thrs = tune_task_b_thresholds(oof_lr["clean"]["proba_b"], Y_true, folds_arr)
 
-    # Fit confidence calibrator on blended OOF + noise_ratio + disagreement
+    p_lr, p_svm = oof_lr["clean"]["proba"], oof_svm["clean"]["proba"]
+    w_lr, fa_m1, m1_a = tune_blend_weight(p_lr, p_svm, y_a, macro_f1_multiclass)
+    m1_b = oof_lr["clean"]["proba_b"]
+    m1_c = oof_lr["clean"]["proba_c"]
+
+    m2_oof_path = config.OOF_DIR / "E020_m2.npz"
+    m2_test_path = config.PREDICTION_DIR / "E020_m2_test.npz"
     nr, no = _noise_stats(df["text"])
-    dis = model_disagreement(p_lr, p_svm)
-    cal = fit_confidence(
-        p_a_blend, y_a,
-        extra_feats=np.column_stack([nr, dis]),
-        folds=folds_arr,
-        noise_only=no,
-    )
+
+    if m2_oof_path.exists() and m2_test_path.exists():
+        log.info("Loading Model 2 OOF & test probabilities (E020_m2)...")
+        m2_oof = np.load(m2_oof_path, allow_pickle=True)
+        m2_test = np.load(m2_test_path, allow_pickle=True)
+        assert np.array_equal(m2_oof["ids"], df["id"].to_numpy(dtype=np.int64))
+        assert np.array_equal(m2_test["ids"], test["id"].to_numpy(dtype=np.int64))
+
+        w_m1_a, fa_ens, ens_a = tune_blend_weight(m1_a, m2_oof["A"], y_a, macro_f1_multiclass)
+        w_m1_b, _, ens_b = tune_blend_weight(m1_b, m2_oof["B"], Y_true, macro_f1_techniques, is_multilabel=True)
+        w_m1_c, _, ens_c = tune_blend_weight(m1_c, m2_oof["C"], y_c, macro_f1_multiclass)
+        dis = model_disagreement(m1_a, m2_oof["A"])
+        extra = np.column_stack([nr, dis, m2_oof["ood_sim"]])
+
+        np.savez_compressed(
+            config.OOF_DIR / "E021_ens.npz",
+            ids=m2_oof["ids"], repeat=m2_oof["repeat"],
+            A=ens_a, B=ens_b, C=ens_c,
+        )
+        log.info("M1+M2 Ensemble OOF F_A=%.4f (w_m1_a=%.2f, w_m1_b=%.2f, w_m1_c=%.2f)",
+                 fa_ens, w_m1_a, w_m1_b, w_m1_c)
+    else:
+        log.warning("Model 2 files not found; using M1 (LR+SVM) only.")
+        m2_test = None
+        ens_a, ens_b, ens_c = m1_a, m1_b, m1_c
+        w_m1_a = w_m1_b = w_m1_c = 1.0
+        dis = model_disagreement(p_lr, p_svm)
+        extra = np.column_stack([nr, dis])
+
+    thrs = tune_task_b_thresholds(ens_b, Y_true, folds_arr)
+    cal = fit_confidence(ens_a, y_a, extra_feats=extra, folds=folds_arr, noise_only=no)
 
     # Fit final model on all labeled data (+ Set A aug + test for unsupervised TF-IDF)
     log.info("Fitting final model on %d rows + %d unlabeled test rows...",
              len(df), len(test))
-    fitted = fit_all(df, test, blend_w=w_a, task_b_thresholds=thrs, calibrator=cal)
+    fitted = fit_all(df, test, blend_w=w_lr, task_b_thresholds=thrs, calibrator=cal)
 
     # Predict test
     log.info("Predicting %d test rows...", len(test))
-    sub = predict_df(test, fitted)
+    sub = predict_df(test, fitted, m2_test=m2_test, w_m1_a=w_m1_a, w_m1_b=w_m1_b, w_m1_c=w_m1_c)
 
     if list(sub["id"].values) != list(template["id"].values):
         raise RuntimeError("Submission IDs do not match the template order!")

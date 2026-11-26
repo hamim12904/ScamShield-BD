@@ -98,6 +98,7 @@
 | E015 | 27 Nov 02:45 | `word+char` only, `C=5`, `n_aug=5` (Set A) + Task B thresholds + `postprocess` | 0.574 | 0.578 | 0.475 | 0.782 | 0.498 | 0.538 | `F_domain=0.316`; thresholds `[0.31,0.39,0.29,0.26,0.4,0.26]` |
 | E018 | 27 Nov 03:10 | Phase 3: Blend `0.4·E015(LR) + 0.6·E016(LinearSVC)` + Logistic Calibration | 0.614 | 0.578 | 0.475 | 0.777 | 0.514 | 0.538 | Cal beats const Brier (`0.2228` vs `0.2305`) |
 | E020 | 27 Nov 03:57 | Model 2: paraphrase-multilingual-MiniLM-L12-v2 + LR (T-023) | 0.575 | 0.566 | 0.343 | 0.684 | 0.556 | — | 5x3 grouped CV on text_norm embeddings, C=1.0 |
+| E021 | 27 Nov 04:21 | Ensemble: `0.7·(0.4·LR+0.6·SVM) + 0.3·M2` + Task B thresholds + OOD calibration | 0.625 | 0.591 | 0.531 | 0.778 | — | 0.538 | Cal beats const (`0.2218` vs `0.2305`); OOF saved `E021_ens.npz` |
 
 ## 8. Kaggle submission log
 
@@ -105,7 +106,8 @@
 |---|---|---|---|---|---|
 | 1 | 27 Nov 02:32 | `outputs/predictions/submission_E1126_2032.csv` | Baseline (format check, E001) | *(pending upload)* | No |
 | 2 | 27 Nov 03:04 | `outputs/predictions/submission_E1126_2104.csv` | Phase 2 E015 (`word+char`, `n_aug=5`, tuned Task B thresholds, `postprocess.py`) | *(pending upload)* | Candidate A |
-| 3 | 27 Nov 03:29 | `outputs/predictions/submission_E1126_2129.csv` | Phase 3 E018 (`0.4·LR + 0.6·LinearSVC` blend, logistic calibration, Task B thresholds, `postprocess.py`) | *(pending upload)* | Candidate B |
+| 3 | 27 Nov 03:29 | `outputs/predictions/submission_E1126_2129.csv` | Phase 3 E018 (`0.4·LR + 0.6·LinearSVC` blend, logistic calibration, Task B thresholds, `postprocess.py`) | *(pending upload)* | No |
+| 4 | 27 Nov 04:21 | `outputs/predictions/submission_E1126_2221.csv` | Phase 3+4 E021 (`M1+M2` ensemble, OOD logistic calibration, Task B thresholds, `postprocess.py`) | *(pending upload)* | Candidate B |
 
 ## 9. Lessons and gotchas
 
@@ -117,29 +119,20 @@
 ## 10. Handoff notes (rewrite at the end of every session)
 
 ```
-Last updated: 27 Nov 03:59 BST by C
+Last updated: 27 Nov 04:22 BST by B
 State:
-  DONE  — T-023: src/features/embedding_features.py implemented with length-sorted batching,
-          L2-normalisation, dynamic padding, GPU fp16 support, and disk caching.
-  DONE  — T-023: Benchmark 10k test rows on paraphrase-multilingual-MiniLM-L12-v2:
-          209.8s (47.7 rows/s on CPU); extrapolated to 2.9h on CPU vs ~6-8 min on Kaggle GPU.
-  DONE  — T-023: max_cosine_to_train implemented with diagonal masking for training cross-fitting.
-  DONE  — T-023: src/training/train_embeddings.py implemented and executed (E020).
-          Saved outputs/oof/E020_m2.npz (keys: ids, repeat, A, B, C, ood_sim, y_a, y_b, y_c, noise_only, noise_ratio, clean_proba_a, clean_proba_b, clean_proba_c, folds).
-          Saved outputs/predictions/E020_m2_test.npz (keys: ids, A, B, C, ood_sim, shape (500000, 6) / (500000,)).
-          Logged E020 to experiments.csv: F_A=0.5748, F_B=0.5663, F_C=0.3428, Cal=0.6835, S_hat=0.5558.
-  DONE  — Added pytest>=7.0 to requirements.txt and verified test suite.
-Next 3 steps for Teammate B:
-  1. Blend M1 (E015/E018) + M2 (E020) using tune_blend_weight with outputs/oof/E020_m2.npz.
-  2. Use ood_sim from outputs/oof/E020_m2.npz as extra_feats in fit_confidence to boost calibration.
-  3. Predict test with blended M1+M2 and generate final submission candidates.
-Next 3 steps for Teammate C:
-  1. Implement tools/make_zip.py (C4) packaging final submission, notebook, .env, and README.
-  2. Assist with clean-run rehearsal of notebook (C3).
-  3. Verify compliance checklist items 7 & 8 and prepare ZIP for upload (S-07, S-08).
+  DONE  — T-030 & T-031 COMPLETE: Blended M1 (E015 LR + E016 LinearSVC) with C's M2 (E020_m2.npz).
+          OOF gains: F_A 0.5825 -> 0.6253 | F_B 0.578 -> 0.5908 | F_C 0.505 -> 0.5308 | Cal 0.7782 (Brier 0.2218 vs const 0.2305).
+  DONE  — T-040: Generated & validated Candidate B: outputs/predictions/submission_E1126_2221.csv (500,000 rows, [OK]).
+  DONE  — Candidate A (conservative M1): outputs/predictions/submission_E1126_2104.csv.
+  DONE  — Full test suite passes: 60 passed in pytest -q.
+Next 3 steps:
+  1. B: Commit & push Phase 2/3/4 code; upload Candidate A (submission_E1126_2104.csv) and Candidate B (submission_E1126_2221.csv) to Kaggle, log public scores in §8, and select both as finals before 17:00 BST (T-042).
+  2. C: Re-run tools/build_notebook.py after pulling B's latest code, implement tools/make_zip.py (T-054), and run clean-run rehearsal (T-051).
+  3. A: Finish error_analysis.py (T-022), handwritten.py (T-025), and README.md (T-052).
 Blockers / questions for teammate:
-  - C has delivered outputs/oof/E020_m2.npz and outputs/predictions/E020_m2_test.npz. Teammate B is unblocked!
-Where results live: outputs/validation_results/experiments.csv ; outputs/oof/E020_m2.npz ; outputs/predictions/E020_m2_test.npz
+  - Resolve D2 (ZIP filename) and D4 (frozen LLM data) before packaging (T-054).
+Where results live: outputs/validation_results/experiments.csv ; outputs/oof/E021_ens.npz ; outputs/predictions/submission_E1126_2221.csv
 ```
 
 ## 11. Declaration checklist (feeds the notebook's first cells)
