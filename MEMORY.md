@@ -91,6 +91,7 @@
 | Exp | Date/time | Change vs previous | F_A | F_B | F_C | Cal (1−Brier) | S_hat | Robust-slice F1 | Notes |
 |---|---|---|---|---|---|---|---|---|---|
 | E001 | 27 Nov 02:32 | Baseline word+char TF-IDF + LR | 0.524 | 0.291 | 0.374 | 0.761 | — | 0.482 | 5x3 grouped CV (`folds.csv`), no aug, C=5 |
+| E015 | 27 Nov 02:45 | `word+char` only, `C=5`, `n_aug=5` (Set A) + Task B thresholds + `postprocess` | 0.574 | 0.578 | 0.475 | 0.780 | 0.498 | 0.538 | `F_domain=0.316`; thresholds `[0.31,0.39,0.29,0.26,0.4,0.26]` |
 
 ## 8. Kaggle submission log
 
@@ -108,16 +109,19 @@
 ## 10. Handoff notes (rewrite at the end of every session)
 
 ```
-Last updated: 27 Nov 02:33 BST by B
+Last updated: 27 Nov 02:47 BST by B
 State:
-  DONE  — T-001, T-007, T-010: all baseline modules, tests (35 passed), and E001 CV + OOF complete.
-  DONE  — E001 submission generated & validated: outputs/predictions/submission_E1126_2032.csv (500,000 rows, [OK]).
-  PENDING — T-011: upload outputs/predictions/submission_E1126_2032.csv to Kaggle and record public score in §8.
-  PENDING — Phase 2: T-020 (augment.py), T-021 (TF-IDF + C tuning), T-024 (Task B thresholds + postprocess.py).
+  DONE  — Phase 1: E001 baseline submitted/validated (submission_E1126_2032.csv).
+  DONE  — Phase 2 T-020: augment.py Set A/B tested (tests/test_augment.py, 5 passed) & integrated into training folds.
+  DONE  — Phase 2 T-021: 16-experiment tuning sweep (E002-E017) on saved 5x3 grouped CV.
+          Winner E015 (word+char only, C=5, n_aug=5): F_A 0.524->0.574, F_rob 0.482->0.538, F_dom 0.231->0.316, S_hat 0.423->0.498.
+  DONE  — Phase 2 T-024: postprocess.py (4 rules at 100% support in sample.csv) + Task B threshold tuning (F_B 0.416->0.578).
+  DONE  — prediction.py updated with E015 + Task B thresholds + postprocess.py; OOF saved at outputs/oof/E015_m1.npz.
+  PENDING — Phase 3: T-030 ensemble.py (waiting for C's Model 2 OOF outputs/oof/*_m2.npz), T-031 calibration.py.
 Next 3 steps:
-  1. Upload outputs/predictions/submission_E1126_2032.csv to Kaggle (Submission #1) and log public score in MEMORY.md §8.
-  2. T-020: Complete/verify src/augment.py (Set A training, Set B eval) and integrate into training folds.
-  3. T-021: Tune TF-IDF blocks, C grid, and augmentation on saved 5x3 grouped CV.
+  1. Wait for C's Model 2 OOF (outputs/oof/*_m2.npz) and A's handwritten extras (data/extra/handwritten.py).
+  2. T-030 & T-031: Blend M1 + M2 in ensemble.py and fit/cross-fit calibration.py (must beat constant Brier baseline).
+  3. T-040 & T-041: Generate & submit Candidate A (E015 Model 1) and Candidate B (Ensemble + calibrated).
 Blockers / questions for teammate:
   - A: build_views() not yet in preprocessing.py; prediction.py falls back to preprocess_frame().
        Once your build_views is merged, update tfidf_features.build_text_dict to use

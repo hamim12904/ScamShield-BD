@@ -1,32 +1,41 @@
 """End-to-end pipeline: fit on all labeled data, predict test, write submission.
 
-Owned by Teammate B (T-010).
+Owned by Teammate B (T-010, updated in Phase 2 T-020/T-021/T-024).
 
 Usage:
     python -m src.prediction
 """
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
 
 from src import config
+from src.augment import expand
 from src.data_loader import (load_sample, load_submission_template, load_test,
-                              techniques_to_multihot)
+                             techniques_to_multihot)
+from src.evaluation.metrics import log_experiment, macro_f1_multiclass, macro_f1_techniques, s_hat
 from src.features.tfidf_features import TfidfBlock, build_text_dict
 from src.models.task_a import TaskAHead
 from src.models.task_b import TaskBHead
 from src.models.task_c import TaskCHead
+from src.postprocess import apply_rules_batch, tune_task_b_thresholds
 from src.submission import build
-from src.training.cross_validation import cross_validate
+from src.training.cross_validation import cross_validate, leave_cluster_out_cv
 
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(message)s")
 
 CHUNK = 50_000   # rows per prediction chunk to bound memory
+
+# Promoted Phase 2 config (E015: word+char only, C=5, n_aug=5 Set A)
+_AUG_LEVELS = ("light", "medium", "heavy")
+_AUG_WEIGHTS = (1.0, 0.8, 0.5)
+DEFAULT_N_AUG = 5
+DEFAULT_C = 5.0
 
 
 # ── Fitted-model container ────────────────────────────────────────────────────
@@ -44,37 +53,61 @@ class FittedModel:
         self.head_c = head_c
 
 
+def _expand_train(df_labeled: pd.DataFrame, n_aug: int, seed: int) -> tuple:
+    """Expand training rows with Set A corruption; return (full_df, sample_weights)."""
+    parts = [df_labeled.assign(weight=1.0)]
+    for i in range(n_aug):
+        lvl = _AUG_LEVELS[i % len(_AUG_LEVELS)]
+        w = _AUG_WEIGHTS[i % len(_AUG_WEIGHTS)]
+        parts.append(expand(df_labeled, k=1, seed=seed + 100 * (i + 1),
+                            level=lvl, ops="A", weight=w))
+    full_df = pd.concat(parts, ignore_index=True)
+    return full_df, full_df["weight"].values.astype(float)
+
+
 # ── Core API ──────────────────────────────────────────────────────────────────
 
 def fit_all(df_labeled: pd.DataFrame,
             df_test: pd.DataFrame = None,
-            seed: int = config.SEED) -> FittedModel:
-    """Fit TF-IDF + all task heads on labeled data.
+            seed: int = config.SEED,
+            n_aug: int = DEFAULT_N_AUG,
+            C: float = DEFAULT_C,
+            task_b_thresholds: list = None) -> FittedModel:
+    """Fit TF-IDF + all task heads on labeled data (+ Set A augmentation).
 
-    df_labeled: DataFrame with text, label, techniques, action
-    df_test:    optional DataFrame with text — used only for unsupervised TF-IDF IDF
-                (declared in MEMORY.md §11 and notebook)
-    Returns:    FittedModel
+    df_labeled:        DataFrame with text, label, techniques, action
+    df_test:           optional DataFrame with text — used only for unsupervised TF-IDF IDF
+    n_aug:             Set A corruption variants per row (default 5)
+    C:                 regularisation parameter (default 5.0)
+    task_b_thresholds: optional 6 per-technique thresholds from OOF tuning
+    Returns:           FittedModel
     """
     config.set_seed(seed)
+    full_train, weights = _expand_train(df_labeled, n_aug=n_aug, seed=seed)
 
-    train_d = build_text_dict(df_labeled)
-    test_d  = build_text_dict(df_test) if df_test is not None else None
+    train_d = build_text_dict(full_train)
+    train_d["struct_feats"] = None
+    test_d = build_text_dict(df_test) if df_test is not None else None
+    if test_d is not None:
+        test_d["struct_feats"] = None
 
-    block = TfidfBlock()
+    block = TfidfBlock(use_msg_blocks=False)
     X     = block.fit_transform(train_d, test_d)
 
-    y_a = df_labeled["label"].values
-    Y_b = techniques_to_multihot(df_labeled["techniques"])
-    y_c = df_labeled["action"].values
+    y_a = full_train["label"].values
+    Y_b = techniques_to_multihot(full_train["techniques"])
+    y_c = full_train["action"].values
 
-    head_a = TaskAHead(seed=seed).fit(X, y_a)
-    head_b = TaskBHead(seed=seed).fit(X, Y_b)
-    head_c = TaskCHead(seed=seed).fit(X, y_c)
+    head_a = TaskAHead(C=C, seed=seed).fit(X, y_a, sample_weight=weights)
+    head_b = TaskBHead(C=C, seed=seed).fit(X, Y_b, sample_weight=weights)
+    if task_b_thresholds is not None:
+        head_b.set_thresholds(task_b_thresholds)
+    head_c = TaskCHead(C=C, seed=seed).fit(X, y_c, sample_weight=weights)
 
     block.save(config.CACHE_DIR / "tfidf_block.pkl")
-    log.info("fit_all: %d labeled rows, %s test rows",
-             len(df_labeled), len(df_test) if df_test is not None else "none")
+    log.info("fit_all: %d labeled rows (%d with aug), %s test rows",
+             len(df_labeled), len(full_train),
+             len(df_test) if df_test is not None else "none")
     return FittedModel(block, head_a, head_b, head_c)
 
 
@@ -90,13 +123,18 @@ def predict_df(df_text: pd.DataFrame, fitted: FittedModel) -> pd.DataFrame:
     for start in range(0, n, CHUNK):
         chunk = df_text.iloc[start:start + CHUNK].copy()
         d     = build_text_dict(chunk)
+        d["struct_feats"] = None
         X     = fitted.block.transform(d)
 
         proba_a = fitted.head_a.predict_proba(X)
-        label   = proba_a.argmax(axis=1)
-        tech    = fitted.head_b.predict(X)
-        action  = fitted.head_c.predict(X)
-        conf    = np.clip(proba_a.max(axis=1), *config.CONF_CLIP)
+        proba_b = fitted.head_b.predict_proba(X)
+        proba_c = fitted.head_c.predict_proba(X)
+
+        label  = proba_a.argmax(axis=1)
+        tech   = fitted.head_b.predict(X)
+        action = proba_c.argmax(axis=1)
+        label, tech, action = apply_rules_batch(label, tech, action, proba_b, proba_c)
+        conf   = np.clip(proba_a.max(axis=1), *config.CONF_CLIP)
 
         all_preds.append(build(chunk["id"], label, tech, action, conf))
         log.info("predict_df: %d / %d rows done", min(start + CHUNK, n), n)
@@ -109,25 +147,30 @@ def predict_df(df_text: pd.DataFrame, fitted: FittedModel) -> pd.DataFrame:
 class _CVModel:
     """Wrapper around TfidfBlock + TaskA/B/C heads for cross_validation.cross_validate."""
 
-    def __init__(self, seed: int = config.SEED):
+    def __init__(self, seed: int = config.SEED, n_aug: int = DEFAULT_N_AUG, C: float = DEFAULT_C):
         self.seed = seed
+        self.n_aug = n_aug
+        self.C = C
 
     def fit(self, train: pd.DataFrame) -> "_CVModel":
-        train_d = build_text_dict(train)
-        self.block = TfidfBlock()
+        full_train, weights = _expand_train(train, n_aug=self.n_aug, seed=self.seed)
+        train_d = build_text_dict(full_train)
+        train_d["struct_feats"] = None
+        self.block = TfidfBlock(use_msg_blocks=False)
         X_tr = self.block.fit_transform(train_d)   # only train; test IDF not used in CV
 
-        y_a = train["label"].values
-        Y_b = techniques_to_multihot(train["techniques"])
-        y_c = train["action"].values
+        y_a = full_train["label"].values
+        Y_b = techniques_to_multihot(full_train["techniques"])
+        y_c = full_train["action"].values
 
-        self.head_a = TaskAHead(seed=self.seed).fit(X_tr, y_a)
-        self.head_b = TaskBHead(seed=self.seed).fit(X_tr, Y_b)
-        self.head_c = TaskCHead(seed=self.seed).fit(X_tr, y_c)
+        self.head_a = TaskAHead(C=self.C, seed=self.seed).fit(X_tr, y_a, sample_weight=weights)
+        self.head_b = TaskBHead(C=self.C, seed=self.seed).fit(X_tr, Y_b, sample_weight=weights)
+        self.head_c = TaskCHead(C=self.C, seed=self.seed).fit(X_tr, y_c, sample_weight=weights)
         return self
 
     def predict(self, valid: pd.DataFrame) -> dict:
         valid_d = build_text_dict(valid)
+        valid_d["struct_feats"] = None
         X_va = self.block.transform(valid_d)
         proba_a = self.head_a.predict_proba(X_va)
         proba_b = self.head_b.predict_proba(X_va)
@@ -142,8 +185,8 @@ class _CVModel:
         }
 
 
-def _cv_oof(df: pd.DataFrame, seed: int = config.SEED, exp_name: str = "E001"):
-    """Run repeated grouped CV. Returns (raw_df, summary_df)."""
+def _cv_oof(df: pd.DataFrame, seed: int = config.SEED, exp_name: str = "E015"):
+    """Run repeated grouped CV. Returns (raw_df, summary_df, oof_bundle)."""
     return cross_validate(
         df,
         lambda: _CVModel(seed=seed),
@@ -151,54 +194,40 @@ def _cv_oof(df: pd.DataFrame, seed: int = config.SEED, exp_name: str = "E001"):
         n_repeats=config.N_REPEATS,
         exp_name=exp_name,
         model_tag="m1",
+        return_oof=True,
     )
 
 
 # ── Main entrypoint ───────────────────────────────────────────────────────────
 
 def main() -> str:
-    """Fit on all labeled data, run CV, predict test, validate, write submission.
-
-    Returns the path of the written submission CSV.
-    """
+    """Fit on all labeled data, run CV, tune Task B thresholds, predict test, write submission."""
     t0 = time.time()
     df       = load_sample()
     test     = load_test()
     template = load_submission_template()
 
-    # Grouped CV (uses provisional group=id until A delivers folds.json)
-    log.info("Running %d-fold × %d-repeat grouped CV (provisional folds)...",
+    log.info("Running %d-fold × %d-repeat grouped CV...",
              config.N_SPLITS, config.N_REPEATS)
-    res, summary = _cv_oof(df)
+    res, summary, oof_bundle = _cv_oof(df)
     log.info("CV summary:\n%s", summary.to_string())
     res.to_csv(config.VALIDATION_DIR / "baseline_cv.csv", index=False)
 
-    # Log experiment
-    try:
-        from src.evaluation.metrics import log_experiment
-        clean_row = summary.loc["clean"]
-        log_experiment({
-            "exp_id":       "E001",
-            "config_json":  "baseline_tfidf_lr_C5",
-            "F_A":          float(clean_row[("F_A",    "mean")]),
-            "F_B":          float(clean_row[("F_B",    "mean")]),
-            "F_C":          float(clean_row[("F_C",    "mean")]),
-            "Cal":          float(1 - clean_row[("brier", "mean")]),
-            "notes":        "baseline TF-IDF+LR, provisional group=id folds, no augmentation",
-        })
-    except Exception as exc:
-        log.warning("Could not log experiment: %s", exc)
+    # Tune Task B thresholds on OOF
+    oof_clean = oof_bundle["clean"]
+    Y_true = techniques_to_multihot(df["techniques"])
+    folds_arr = oof_bundle["folds"]["fold_r0"].values
+    thrs = tune_task_b_thresholds(oof_clean["proba_b"], Y_true, folds_arr)
 
-    # Fit final model on all labeled data (+ test for unsupervised TF-IDF)
+    # Fit final model on all labeled data (+ Set A aug + test for unsupervised TF-IDF)
     log.info("Fitting final model on %d rows + %d unlabeled test rows...",
              len(df), len(test))
-    fitted = fit_all(df, test)
+    fitted = fit_all(df, test, task_b_thresholds=thrs)
 
     # Predict test
     log.info("Predicting %d test rows...", len(test))
     sub = predict_df(test, fitted)
 
-    # Validate alignment with submission template
     if list(sub["id"].values) != list(template["id"].values):
         raise RuntimeError("Submission IDs do not match the template order!")
     if len(sub) != len(template):
@@ -206,8 +235,7 @@ def main() -> str:
             f"Row count mismatch: {len(sub)} (ours) vs {len(template)} (template)"
         )
 
-    # Write submission
-    exp_id   = datetime.utcnow().strftime("E%m%d_%H%M")
+    exp_id   = datetime.now(timezone.utc).strftime("E%m%d_%H%M")
     out_path = config.PREDICTION_DIR / f"submission_{exp_id}.csv"
     sub.to_csv(out_path, index=False)
     elapsed  = (time.time() - t0) / 60
