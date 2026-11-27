@@ -77,14 +77,32 @@ def mine_pseudo_labels(
         log.warning("No test candidates passed pre-filtering.")
         return pd.DataFrame(columns=["id", "text", "label", "techniques", "action", "source", "weight", "confidence"])
 
-    # 2. Extract Task A/B/C probabilities via fitted Model 1
-    d = build_text_dict(sub_test)
-    d["struct_feats"] = None
-    X = fitted_model.block.transform(d)
+    # 2. Extract Task A/B/C probabilities via fitted Model 1 in bounded-memory chunks
+    chunk_size = 50_000
+    n_sub = len(sub_test)
+    p_a_parts, p_b_parts, p_c_parts = [], [], []
+    w_lr = float(getattr(fitted_model, "blend_w", 0.5))
+    has_svm = getattr(fitted_model, "head_a_svm", None) is not None
 
-    p_a = fitted_model.head_a.predict_proba(X)
-    p_b = fitted_model.head_b.predict_proba(X)
-    p_c = fitted_model.head_c.predict_proba(X)
+    for start in range(0, n_sub, chunk_size):
+        end = min(start + chunk_size, n_sub)
+        chunk = sub_test.iloc[start:end]
+        d = build_text_dict(chunk)
+        d["struct_feats"] = None
+        X = fitted_model.block.transform(d)
+
+        p_a_lr = fitted_model.head_a.predict_proba(X)
+        if has_svm:
+            p_a_svm = fitted_model.head_a_svm.predict_proba(X)
+            p_a_parts.append(w_lr * p_a_lr + (1.0 - w_lr) * p_a_svm)
+        else:
+            p_a_parts.append(p_a_lr)
+        p_b_parts.append(fitted_model.head_b.predict_proba(X))
+        p_c_parts.append(fitted_model.head_c.predict_proba(X))
+
+    p_a = np.vstack(p_a_parts)
+    p_b = np.vstack(p_b_parts)
+    p_c = np.vstack(p_c_parts)
 
     # If Model 2 predictions match indices, require agreement
     if m2_test is not None and "A" in m2_test:

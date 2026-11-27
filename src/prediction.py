@@ -337,6 +337,9 @@ def main(
     ens_exp: str = "E032",
     use_extra: bool = True,
     extra_paths: Optional[Sequence[Path]] = None,
+    llm_path: Optional[Path] = None,
+    pseudo_path: Optional[Path] = None,
+    include_handwritten: bool = False,
     require_unpadded_m2: bool = True,
     test_limit: Optional[int] = None,
 ) -> str:
@@ -369,12 +372,16 @@ def main(
             for p in extra_paths:
                 parts.append(load_extra(Path(p), default_weight=0.25))
         else:
-            llm_p = config.ROOT / "data" / "extra" / "llm_labels_v1.jsonl"
-            pseudo_p = config.ROOT / "data" / "extra" / "pseudo_labels_v1.jsonl"
+            llm_p = Path(llm_path) if llm_path is not None else (config.ROOT / "data" / "extra" / "llm_labels_v1.jsonl")
+            pseudo_p = Path(pseudo_path) if pseudo_path is not None else (config.ROOT / "data" / "extra" / "pseudo_labels_v1.jsonl")
             if llm_p.exists():
                 parts.append(load_extra(llm_p, default_weight=0.30))
             if pseudo_p.exists():
                 parts.append(load_pseudo_labels(pseudo_p, weight=0.20))
+            if include_handwritten:
+                from data.extra.handwritten import load_handwritten
+                hw = load_handwritten(weight=0.40)[["id", "text", "label", "techniques", "action", "source", "weight"]]
+                parts.append(hw)
 
         if parts:
             comb = pd.concat(parts, ignore_index=True)
@@ -448,8 +455,14 @@ def main(
             m2_test = m2_test_data
 
         w_m1_a, fa_ens, ens_a = tune_blend_weight(m1_a, m2_oof["A"], y_a, macro_f1_multiclass)
-        w_m1_b, _, ens_b = tune_blend_weight(m1_b, m2_oof["B"], Y_true, macro_f1_techniques, is_multilabel=True)
-        w_m1_c, _, ens_c = tune_blend_weight(m1_c, m2_oof["C"], y_c, macro_f1_multiclass)
+        w_m1_b, _, ens_b = tune_blend_weight(
+            m1_b, m2_oof["B"], Y_true, macro_f1_techniques,
+            grid=(0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0), is_multilabel=True,
+        )
+        w_m1_c, _, ens_c = tune_blend_weight(
+            m1_c, m2_oof["C"], y_c, macro_f1_multiclass,
+            grid=(0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0),
+        )
         dis = model_disagreement(m1_a, m2_oof["A"])
         extra = np.column_stack([nr, dis, m2_oof["ood_sim"]])
 
