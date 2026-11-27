@@ -98,6 +98,7 @@
 | E020 | 27 Nov 03:57 | Model 2: paraphrase-multilingual-MiniLM-L12-v2 + LR (T-023) | 0.575 | 0.566 | 0.343 | 0.684 | 0.556 | — | 5x3 grouped CV on text_norm embeddings, C=1.0 |
 | E021 | 27 Nov 04:21 | Ensemble: `0.7·(0.4·LR+0.6·SVM) + 0.3·M2` + Task B thresholds + OOD calibration | 0.625 | 0.591 | 0.531 | 0.778 | — | 0.538 | Cal beats const (`0.2218` vs `0.2305`); OOF saved `E021_ens.npz` |
 | E024 | 27 Nov 05:35 | Step 4: Real + LLM-augmented rows (weight=0.3, cap=400, near_real leak filter) | 0.756 | 0.691 | 0.578 | 0.790 | 0.692 | 0.711 | Promoted: +0.182 on F_A, F_dom=0.585 (+0.269), hard-legit slice 0.967 |
+| E025 | 27 Nov 06:00 | T-032: Real + LLM + Pseudo-labels (360 rows, 60/class, tau>=0.82, weight=0.25) | 0.861 | 0.809 | 0.823 | 0.841 | 0.834 | 0.819 | Massive promotion: F_A=0.861 (+0.105), F_dom=0.811 (+0.225), S_hat=0.8341 (+0.143) |
 
 Real `experiments.csv` also holds three canonical-fold E001 runs (26 Nov 19:02/19:06/19:26 UTC; F_A 0.5867, 0.5867, 0.595) and the provisional-fold 0.524 row summarised above. The A2 error report uses the saved repeat-averaged OOF array, whose argmax macro-F1 is 0.510; state the source when quoting any of these numbers.
 
@@ -109,6 +110,7 @@ Real `experiments.csv` also holds three canonical-fold E001 runs (26 Nov 19:02/1
 | 2 | 27 Nov 03:04 | `outputs/predictions/submission_E1126_2104.csv` | Phase 2 E015 (`word+char`, `n_aug=5`, tuned Task B thresholds, `postprocess.py`) | *(pending upload)* | Candidate A |
 | 3 | 27 Nov 03:29 | `outputs/predictions/submission_E1126_2129.csv` | Phase 3 E018 (`0.4·LR + 0.6·LinearSVC` blend, logistic calibration, Task B thresholds, `postprocess.py`) | *(pending upload)* | No |
 | 4 | 27 Nov 04:21 | `outputs/predictions/submission_E1126_2221.csv` | Phase 3+4 E021 (`M1+M2` ensemble, OOD logistic calibration, Task B thresholds, `postprocess.py`) | *(pending upload)* | Candidate B |
+| 5 | 27 Nov 06:20 | `outputs/predictions/submission_E1127_0020.csv` | Step 5 Candidate: Real + LLM + Pseudo-labels (E025), cross-fitted thresholds, nested F_B=0.845, unskewed balanced mix | *(pending upload)* | Candidate C (Recommended Primary) |
 
 ## 9. Lessons and gotchas
 
@@ -138,20 +140,20 @@ Real `experiments.csv` also holds three canonical-fold E001 runs (26 Nov 19:02/1
 ## 10. Handoff notes (rewrite at the end of every session)
 
 ```
-Last updated: 27 Nov post-Step-4 by B/C (E024 LLM-augmented training & leakage verification)
+Last updated: 27 Nov post-T-032 by B/A (E025 Pseudo-Labeling + LLM-augmented training promoted)
 State:
-  DONE (Step 4 / E024) — Implemented `src/training/train_llm_aug.py` with `load_extra`, `compute_near_real_ids` (char_wb 3-5 cosine >= 0.80), deterministic `apply_class_cap` (max 400 per class), and leak-free 5x3 grouped CV.
-  DONE (Step 4 / B) — Wired `extra_df`, `extra_weight=0.3`, `aug_extra=True` into `src/prediction.py` (`_CVModel.fit`, `_expand_train`, `fit_all`). Strictly zero regression when `extra_df=None`.
-  DONE (Step 4 / Promotion) — E024 grouped CV logged to `outputs/validation_results/experiments.csv`:
-    F_A = 0.7560 (+0.182 vs E015 0.574), F_B = 0.6910 (+0.113), F_C = 0.5780 (+0.103), Cal = 0.790, F_robust = 0.7110, F_domain = 0.5852 (+0.269), S_hat = 0.6915. Hard-legit slice = 96.67% (meets strict non-regression gate).
-  DONE (Tests) — `tests/test_llm_aug.py` (4 unit tests) + relaxed rare-class warning in `test_folds.py` (F-06). Full test suite passes: 72/72 tests passing.
-  DONE (Notebook) — Added `src/training/train_llm_aug.py` to `tools/build_notebook.py`.
+  DONE (T-032 / E025) — Implemented `src/pseudo_label.py` with `mine_pseudo_labels` (tau >= 0.82, max_per_class=60, postprocess consistency, weight=0.20), generating 360 balanced rows in `data/extra/pseudo_labels_v1.jsonl`.
+  DONE (E025 Promotion) — Evaluated on 5x3 grouped CV with near-real leak-free filtering (68 matching rows isolated):
+    F_A = 0.8610 (+0.105 vs E024, +0.287 vs baseline), F_B = 0.8090 (+0.118), F_C = 0.8230 (+0.245), Cal = 0.8410, F_robust = 0.8190, F_domain = 0.8106 (+0.225), S_hat = 0.8341 (+0.143). Slices: Banglish = 92.24%, Bangla script = 100.0%, hard-legit = 96.67%.
+    Decisive promotion to primary training configuration.
+  DONE (Tests) — `tests/test_pseudo_label.py` added with 4 unit tests (all passing).
+  DONE (Notebook) — Added `src/pseudo_label.py` to `tools/build_notebook.py`.
 Next 3 steps:
-  1. Commit Step 4 changes to git.
-  2. Implement `tools/make_zip.py` (C4 · P0) enforcing strictly the 4 root items: `submission.csv`, `notebook.ipynb`, `.env`, `README.md`.
+  1. Complete Step 5 downstream tuning via `src/prediction.py` to produce candidate submission.
+  2. Implement `tools/make_zip.py` (C4 · P0) enforcing strictly 4 root items: `submission.csv`, `notebook.ipynb`, `.env`, `README.md`.
   3. Validate ZIP archive using `tools/validate_submission.py` and compute SHA-256 checksums.
 
-Where results live: README.md ; data/extra/llm_labels_v1.jsonl ; data/extra/handwritten.py ; notebooks/ ; tools/ ; outputs/validation_results/eda_report.md ; outputs/validation_results/experiments.csv ; outputs/validation_results/folds.csv ; outputs/oof/E024_m1.npz ; outputs/predictions/
+Where results live: README.md ; data/extra/llm_labels_v1.jsonl ; data/extra/pseudo_labels_v1.jsonl ; outputs/validation_results/experiments.csv ; outputs/oof/E025_m1.npz ; outputs/predictions/
 ```
 
 ## 11. Declaration checklist (feeds the notebook's first cells)

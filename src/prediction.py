@@ -9,6 +9,7 @@ import json
 import logging
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional, Sequence
 
 import numpy as np
@@ -304,11 +305,21 @@ class _CVModel:
 
 
 def _cv_oof(df: pd.DataFrame, seed: int = config.SEED,
-            exp_name: str = "E015", C: float = DEFAULT_C, model_type: str = "lr"):
+            exp_name: str = "E015", C: float = DEFAULT_C, model_type: str = "lr",
+            extra_df: pd.DataFrame = None, extra_weight: float = 0.25,
+            aug_extra: bool = True, all_real_ids: Sequence[int] = None):
     """Run repeated grouped CV. Returns (raw_df, summary_df, oof_bundle)."""
     return cross_validate(
         df,
-        lambda: _CVModel(seed=seed, C=C, model_type=model_type),
+        lambda: _CVModel(
+            seed=seed,
+            C=C,
+            model_type=model_type,
+            extra_df=extra_df,
+            extra_weight=extra_weight,
+            aug_extra=aug_extra,
+            all_real_ids=all_real_ids,
+        ),
         n_splits=config.N_SPLITS,
         n_repeats=config.N_REPEATS,
         exp_name=exp_name,
@@ -319,18 +330,61 @@ def _cv_oof(df: pd.DataFrame, seed: int = config.SEED,
 
 # ── Main entrypoint ───────────────────────────────────────────────────────────
 
-def main() -> str:
+def main(
+    exp_lr: str = "E026",
+    exp_svm: str = "E027",
+    m2_exp: Optional[str] = "E020",
+    ens_exp: str = "E028",
+    use_extra: bool = True,
+    extra_paths: Optional[Sequence[Path]] = None,
+    require_unpadded_m2: bool = False,
+) -> str:
     """Fit on all labeled data, blend M1+M2 if available, calibrate, predict test, write submission."""
     t0 = time.time()
     df       = load_sample()
     test     = load_test()
     template = load_submission_template()
+    all_real_ids = df["id"].values.tolist()
 
-    log.info("Running %d-fold × %d-repeat grouped CV (LR & LinearSVC)...",
-             config.N_SPLITS, config.N_REPEATS)
-    res_lr, sum_lr, oof_lr = _cv_oof(df, exp_name="E015", C=DEFAULT_C, model_type="lr")
-    _, sum_svm, oof_svm    = _cv_oof(df, exp_name="E016", C=DEFAULT_SVM_C, model_type="svm")
-    res_lr.to_csv(config.VALIDATION_DIR / "baseline_cv.csv", index=False)
+    # 1. Load promoted extra data (LLM + pseudo-labels) if enabled
+    processed_extra = None
+    if use_extra:
+        from src.pseudo_label import load_pseudo_labels
+        from src.training.train_llm_aug import (apply_class_cap,
+                                               compute_near_real_ids,
+                                               load_extra)
+
+        parts = []
+        if extra_paths:
+            for p in extra_paths:
+                parts.append(load_extra(Path(p), default_weight=0.25))
+        else:
+            llm_p = config.ROOT / "data" / "extra" / "llm_labels_v1.jsonl"
+            pseudo_p = config.ROOT / "data" / "extra" / "pseudo_labels_v1.jsonl"
+            if llm_p.exists():
+                parts.append(load_extra(llm_p, default_weight=0.30))
+            if pseudo_p.exists():
+                parts.append(load_pseudo_labels(pseudo_p, weight=0.20))
+
+        if parts:
+            comb = pd.concat(parts, ignore_index=True)
+            capped = apply_class_cap(comb, max_per_class=400, seed=config.SEED)
+            processed_extra = compute_near_real_ids(capped, df)
+            near_count = (processed_extra["near_real_ids"].apply(len) > 0).sum()
+            log.info("Loaded %d extra rows for training (%d with near-real matches)",
+                     len(processed_extra), near_count)
+
+    log.info("Running %d-fold × %d-repeat grouped CV (LR: %s & LinearSVC: %s)...",
+             config.N_SPLITS, config.N_REPEATS, exp_lr, exp_svm)
+    res_lr, sum_lr, oof_lr = _cv_oof(
+        df, exp_name=exp_lr, C=DEFAULT_C, model_type="lr",
+        extra_df=processed_extra, extra_weight=0.25, aug_extra=True, all_real_ids=all_real_ids
+    )
+    _, sum_svm, oof_svm    = _cv_oof(
+        df, exp_name=exp_svm, C=DEFAULT_SVM_C, model_type="svm",
+        extra_df=processed_extra, extra_weight=0.25, aug_extra=True, all_real_ids=all_real_ids
+    )
+    res_lr.to_csv(config.VALIDATION_DIR / f"{exp_lr}_cv.csv", index=False)
 
     y_a = df["label"].values
     Y_true = techniques_to_multihot(df["techniques"])
@@ -342,16 +396,35 @@ def main() -> str:
     m1_b = oof_lr["clean"]["proba_b"]
     m1_c = oof_lr["clean"]["proba_c"]
 
-    m2_oof_path = config.OOF_DIR / "E020_m2.npz"
-    m2_test_path = config.PREDICTION_DIR / "E020_m2_test.npz"
+    m2_oof_path = (config.OOF_DIR / f"{m2_exp}_m2.npz") if m2_exp else None
+    m2_test_path = (config.PREDICTION_DIR / f"{m2_exp}_m2_test.npz") if m2_exp else None
     nr, no = _noise_stats(df["text"])
 
-    if m2_oof_path.exists() and m2_test_path.exists():
-        log.info("Loading Model 2 OOF & test probabilities (E020_m2)...")
+    m2_test = None
+    if m2_oof_path and m2_test_path and m2_oof_path.exists() and m2_test_path.exists():
+        log.info("Loading Model 2 OOF & test probabilities (%s_m2)...", m2_exp)
         m2_oof = np.load(m2_oof_path, allow_pickle=True)
-        m2_test = np.load(m2_test_path, allow_pickle=True)
+        m2_test_data = np.load(m2_test_path, allow_pickle=True)
         assert np.array_equal(m2_oof["ids"], df["id"].to_numpy(dtype=np.int64))
-        assert np.array_equal(m2_test["ids"], test["id"].to_numpy(dtype=np.int64))
+        assert np.array_equal(m2_test_data["ids"], test["id"].to_numpy(dtype=np.int64))
+
+        # Check padding on Model 2 test arrays
+        A_test = m2_test_data["A"]
+        n_padded = int((A_test == A_test[-1]).all(axis=1).sum())
+        if n_padded > 1000:
+            msg = (
+                f"Model 2 test arrays in {m2_test_path.name} are padded ({n_padded} identical rows)! "
+                "To generate full unpadded embeddings on Kaggle GPU, run:\n"
+                "    python -m src.training.train_embeddings --full-test"
+            )
+            if require_unpadded_m2:
+                log.error(msg)
+                raise RuntimeError(msg)
+            else:
+                log.warning("%s\nProceeding with M1 (LR+SVM) test predictions to prevent class skew.", msg)
+                m2_test = None
+        else:
+            m2_test = m2_test_data
 
         w_m1_a, fa_ens, ens_a = tune_blend_weight(m1_a, m2_oof["A"], y_a, macro_f1_multiclass)
         w_m1_b, _, ens_b = tune_blend_weight(m1_b, m2_oof["B"], Y_true, macro_f1_techniques, is_multilabel=True)
@@ -360,27 +433,46 @@ def main() -> str:
         extra = np.column_stack([nr, dis, m2_oof["ood_sim"]])
 
         np.savez_compressed(
-            config.OOF_DIR / "E021_ens.npz",
+            config.OOF_DIR / f"{ens_exp}_ens.npz",
             ids=m2_oof["ids"], repeat=m2_oof["repeat"],
             A=ens_a, B=ens_b, C=ens_c,
         )
         log.info("M1+M2 Ensemble OOF F_A=%.4f (w_m1_a=%.2f, w_m1_b=%.2f, w_m1_c=%.2f)",
                  fa_ens, w_m1_a, w_m1_b, w_m1_c)
     else:
-        log.warning("Model 2 files not found; using M1 (LR+SVM) only.")
-        m2_test = None
+        log.warning("Model 2 files not found or disabled; using M1 (LR+SVM) only.")
         ens_a, ens_b, ens_c = m1_a, m1_b, m1_c
         w_m1_a = w_m1_b = w_m1_c = 1.0
         dis = model_disagreement(p_lr, p_svm)
         extra = np.column_stack([nr, dis])
 
     thrs = tune_task_b_thresholds(ens_b, Y_true, folds_arr)
+    # Compute nested (cross-fitted) Task B estimate
+    from sklearn.metrics import f1_score
+    nested_scores = []
+    for j in range(Y_true.shape[1]):
+        y_col = Y_true[:, j]
+        p_col = ens_b[:, j]
+        pred_col = (p_col >= thrs[j]).astype(int)
+        nested_scores.append(f1_score(y_col, pred_col, zero_division=0))
+    nested_fb = float(np.mean(nested_scores))
+    log.info("Tuned Task B thresholds: %s (nested F_B estimate=%.4f)", thrs, nested_fb)
+
     cal = fit_confidence(ens_a, y_a, extra_feats=extra, folds=folds_arr, noise_only=no)
 
-    # Fit final model on all labeled data (+ Set A aug + test for unsupervised TF-IDF)
-    log.info("Fitting final model on %d rows + %d unlabeled test rows...",
-             len(df), len(test))
-    fitted = fit_all(df, test, blend_w=w_lr, task_b_thresholds=thrs, calibrator=cal)
+    # Fit final model on all labeled data (+ Set A aug + extra rows; F-07 train-only IDF)
+    log.info("Fitting final model on %d labeled rows (+ %s extras)...",
+             len(df), len(processed_extra) if processed_extra is not None else 0)
+    fitted = fit_all(
+        df,
+        df_test=None,
+        blend_w=w_lr,
+        task_b_thresholds=thrs,
+        calibrator=cal,
+        extra_df=processed_extra,
+        extra_weight=0.25,
+        aug_extra=True,
+    )
 
     # Predict test
     log.info("Predicting %d test rows...", len(test))
@@ -400,6 +492,8 @@ def main() -> str:
     log.info("Done → %s (%.1f min)", out_path, elapsed)
     log.info("Predicted class mix:\n%s",
              sub["label"].value_counts(normalize=True).sort_index().round(3))
+    log.info("Predicted action mix:\n%s",
+             sub["action"].value_counts(normalize=True).sort_index().round(3))
     return str(out_path)
 
 

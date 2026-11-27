@@ -38,6 +38,7 @@ MODULE_PATHS: tuple[str, ...] = (
     "src/training/train_embeddings.py",
     "src/training/train_llm_aug.py",
     "src/llm_label.py",
+    "src/pseudo_label.py",
     "src/submission.py",
     "src/prediction.py",
     "tools/validate_submission.py",
