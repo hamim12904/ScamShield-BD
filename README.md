@@ -11,19 +11,19 @@ Multilingual scam-conversation classifier for the three scored tasks:
 - **C** — intended action (six codes).
 - **D** — confidence in `[0.03, 0.97]`.
 
-The final candidate is **Step 5 / E028**: 5-fold × 3-repeat grouped CV combining E026 logistic regression, E027 linear SVM, the promoted LLM + pseudo-label extras, equal M1/M2 blend weights (0.50/0.50) for Tasks A/B/C, the full-test E020 Model 2 branch (`paraphrase-multilingual-MiniLM-L12-v2` + OOD similarity), cross-fitted Task B thresholds, and a constant-confidence fallback. Model 1 uses word TF-IDF on `text_norm` (preserved text) and char TF-IDF on `text_skel` (skeleton) with structure features; message blocks and the raw-char branch are disabled. Preprocessing normalises Unicode lookalikes and zero-width characters, preserves `|||` conversation delimiters and speaker markers, flags noise-only rows, and protects hard-legit patterns. Validation uses deterministic saved folds (`outputs/validation_results/folds.csv`) with duplicate/template isolation, leave-cluster-out checks, corruption slices and error analysis. See `outputs/validation_results/eda_report.md`, `e001_m1_error_report.md` and `test_diagnosis_step5.md`.
+The final candidate is **Step 5 / E032**: 5-fold × 3-repeat grouped CV combining E030 logistic regression, E031 linear SVM, the promoted 450-row LLM cache + frozen pseudo-label extras, equal M1/M2 blend weights (0.50/0.50) for Tasks A/B/C, the full-test E020 Model 2 branch (`paraphrase-multilingual-MiniLM-L12-v2` + OOD similarity), cross-fitted Task B thresholds, and a constant-confidence fallback. OOF: **F_A=0.9002, F_B=0.8206** (tuned thresholds; nested cross-fitted 0.7061), **F_C=0.7974, Cal=0.8972** (Brier 0.1028). The E029 LLM-only ablation improved over E024 (F_A 0.7560→0.8610, F_rob 0.5852→0.8410), justifying the expanded cache. Model 1 uses word TF-IDF on `text_norm` (preserved text) and char TF-IDF on `text_skel` (skeleton) with structure features; message blocks and the raw-char branch are disabled. Preprocessing normalises Unicode lookalikes and zero-width characters, preserves `|||` conversation delimiters and speaker markers, flags noise-only rows, and protects hard-legit patterns. Validation uses deterministic saved folds (`outputs/validation_results/folds.csv`) with duplicate/template isolation, leave-cluster-out checks, corruption slices and error analysis. See `outputs/validation_results/eda_report.md`, `e001_m1_error_report.md` and `test_diagnosis_step5.md`.
 
 ## External resources and licences
 
-The clean run uses frozen `llm_labels_v1.jsonl` and `pseudo_labels_v1.jsonl`; with `REGENERATE_SYNTH=False` it needs **no hosted API key**. `data/extra/handwritten.py` is declared but is not used by the final E028 candidate. Model 2 downloads the declared Hugging Face encoder weights during the clean run. `.env` is empty and present because the ZIP requires it.
+The clean run uses frozen `llm_labels_v1.jsonl` and `pseudo_labels_v1.jsonl`; with `REGENERATE_SYNTH=False` it needs **no hosted API key**. `data/extra/handwritten.py` is declared but is not used by the final E032 candidate. Model 2 downloads the declared Hugging Face encoder weights during the clean run. `.env` is empty and present because the ZIP requires it.
 
 | Resource | Source / provider | Licence | Purpose |
 |---|---|---|---|
 | scikit-learn, pandas, numpy, scipy, joblib, regex, ftfy, Unidecode, torch, python-dotenv | PyPI | BSD/MIT | modelling, preprocessing, data handling, clean-run install |
 | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` | Hugging Face | Apache-2.0 | Model 2 dense embeddings + OOD similarity |
-| Frozen `llm_labels_v1.jsonl` | optional hosted LLM, generated ahead of time | Provider terms | promoted supervised extra; embedded; no key needed for clean run |
+| Frozen `llm_labels_v1.jsonl` | optional hosted LLM (`gemini-3.5-flash-lite`, 450 rows, prompt `cd9ebbf4f0`), generated ahead of time | Provider terms | promoted supervised extra; embedded; no key needed for clean run |
 | Frozen `pseudo_labels_v1.jsonl` | our semi-supervised code | n/a | promoted pseudo-label extra derived from competition test text; embedded |
-| Hand-written extra examples | `data/extra/handwritten.py`, our own | n/a | declared only; not used in final E028 candidate |
+| Hand-written extra examples | `data/extra/handwritten.py`, our own | n/a | declared only; not used in final E032 candidate |
 
 Other PyPI packages used by the code are listed in `requirements.txt`. The notebook embeds modules, frozen label files and `folds.csv` through generated `%%writefile` cells; it does not embed secrets.
 
@@ -47,4 +47,13 @@ An isolated 1,000-row `jupyter nbconvert --execute` smoke test passed in **1057.
 
 ## API notes
 
-No API calls are made during the clean run and no key is required; `.env` is empty. `REGENERATE_SYNTH=False`, so the embedded frozen LLM and pseudo-label files are used instead. Hand-written rules and examples come only from the task definitions and labeled sample patterns; no raw test text is copied into those rules/examples. The frozen pseudo-label file is a declared semi-supervised artifact derived from competition test text.
+The clean run makes no API calls and needs no key; `REGENERATE_SYNTH=False`, so the embedded frozen LLM and pseudo-label files are used instead. The frozen LLM file contains 450 test-template labels produced ahead of time with `gemini-3.5-flash-lite` (prompt `cd9ebbf4f0`; calibration-gate label macro-F1 0.9907 on `sample.csv`). To regenerate labels, create `.env` from `.env.example` and set:
+
+```
+LLM_PROVIDER=gemini
+LLM_MODEL=gemini-3.5-flash-lite
+LLM_API_KEY=<active AQ. key>
+LLM_RPM=12
+```
+
+Do not add `LLM_THINKING_BUDGET` (the model rejects it with HTTP 400). Keep `.env` in UTF-8 without BOM, untracked and out of Git. `.env` in the submission ZIP may be empty because the clean run reads the frozen files; a working throwaway key is optional and is used only for regeneration. Hand-written rules and examples come only from the task definitions and labeled sample patterns; no raw test text is copied into those rules/examples. The frozen pseudo-label file is a declared semi-supervised artifact derived from competition test text.

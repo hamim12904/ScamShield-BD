@@ -179,8 +179,8 @@ def build_declaration_markdown(section_11_text: str) -> str:
 - **Secrets / Keys:** Read via `os.getenv` / `python-dotenv`. `REGENERATE_SYNTH=False`, so the clean run uses frozen LLM/pseudo-label files and needs **no API key**. A key is required only when explicitly enabling regeneration.
 
 ## 3. Method & Validation Summary
-- **Final model (Step 5 / E028):** 5x3 grouped CV with LR (E026) and LinearSVC (E027), promoted LLM + pseudo-label extras, full-test MiniLM Model 2 (E020), equal M1/M2 blend weights (0.50/0.50) for Tasks A/B/C, cross-fitted Task B thresholds, and a constant-confidence fallback. It writes `outputs/predictions/submission_E<mmdd>_<hhmm>.csv`, copied to `submission.csv`.
-- **Validation:** Deterministic saved 5-fold × 3-repeat grouped CV (`outputs/validation_results/folds.csv`) with duplicate/template isolation and leave-cluster-out checks. Nested cross-fitted F_B=0.7103; calibrator Brier=0.1283 (constant baseline).
+- **Final model (Step 5 / E032):** 5x3 grouped CV with LR (E030) and LinearSVC (E031), 450 real LLM labels + frozen pseudo-label extras (810 rows after the class cap), full-test MiniLM Model 2 (E020), equal M1/M2 blend weights (0.50/0.50) for Tasks A/B/C, cross-fitted Task B thresholds, and a constant-confidence fallback. It writes `outputs/predictions/submission_E<mmdd>_<hhmm>.csv`, copied to `submission.csv`.
+- **Validation:** Deterministic saved 5-fold × 3-repeat grouped CV (`outputs/validation_results/folds.csv`) with duplicate/template isolation and leave-cluster-out checks. OOF F_A=0.9002, F_B=0.8206 (tuned thresholds; nested cross-fitted 0.7061), F_C=0.7974, Cal=0.8972 (Brier 0.1028, constant baseline); slices English 0.844, Banglish 0.947, Bangla 0.778, single 0.890, conversation 1.000, hard-legit 0.967.
 - **Corruption Robustness:** Set A augmentation is applied to training folds only (inheriting source `group_id`); Set B corruption is evaluation-only.
 
 ## 4. Reproducibility & Execution
@@ -398,7 +398,9 @@ assert M2_OOF_PATH.exists() and M2_TEST_PATH.exists(), "Model 2 artifacts were n
 assert len(np.load(M2_TEST_PATH, allow_pickle=True)["ids"]) == expected_m2_rows
 
 print("Running final grouped CV, M1+M2 blend, calibration, final fit, and prediction...")
-FINAL_SUBMISSION_PATH = prediction.main(test_limit=TEST_SLICE)
+FINAL_SUBMISSION_PATH = prediction.main(
+    test_limit=TEST_SLICE, exp_lr="E030", exp_svm="E031", ens_exp="E032"
+)
 cv_elapsed = time.perf_counter() - t0
 print(f"Final pipeline completed in {cv_elapsed:.2f}s")
 """

@@ -331,10 +331,10 @@ def _cv_oof(df: pd.DataFrame, seed: int = config.SEED,
 # ── Main entrypoint ───────────────────────────────────────────────────────────
 
 def main(
-    exp_lr: str = "E026",
-    exp_svm: str = "E027",
+    exp_lr: str = "E030",
+    exp_svm: str = "E031",
     m2_exp: Optional[str] = "E020",
-    ens_exp: str = "E028",
+    ens_exp: str = "E032",
     use_extra: bool = True,
     extra_paths: Optional[Sequence[Path]] = None,
     require_unpadded_m2: bool = True,
