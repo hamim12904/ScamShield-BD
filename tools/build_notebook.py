@@ -55,8 +55,66 @@ PACKAGE_DIRS: tuple[str, ...] = (
     "tools",
 )
 
+FROZEN_DATA_PATHS: tuple[str, ...] = (
+    "data/extra/llm_labels_v1.jsonl",
+    "data/extra/pseudo_labels_v1.jsonl",
+    "outputs/validation_results/folds.csv",
+)
+
 DEFAULT_OUTPUT = Path("notebooks/notebook.ipynb")
 DEFAULT_MEMORY = Path("MEMORY.md")
+
+
+def _dotted_to_relpath(dotted: str) -> str | None:
+    """Map a project dotted module name to its repository-relative file path."""
+    parts = dotted.split(".")
+    if parts[0] not in {"src", "tools", "data"}:
+        return None
+    return "/".join(parts) + ".py"
+
+
+def validate_modules(module_paths: Sequence[str], repo_root: Path) -> None:
+    """Fail the build on stub bodies or imports missing from the embedded module list."""
+    embedded = set(module_paths)
+    for rel_path in module_paths:
+        full_path = repo_root / rel_path
+        if not full_path.is_file():
+            continue
+        text = full_path.read_text(encoding="utf-8")
+        if "NotImplementedError" in text:
+            raise ValueError(f"Embedded module contains NotImplementedError: {rel_path}")
+
+    for rel_path in module_paths:
+        full_path = repo_root / rel_path
+        if not full_path.is_file():
+            continue
+        text = full_path.read_text(encoding="utf-8")
+        for match in re.finditer(r"^\s*from\s+([A-Za-z0-9_.]+)\s+import\s+([^\n#]+)", text, re.M):
+            base, names_str = match.group(1), match.group(2)
+            if base.split(".")[0] not in {"src", "tools", "data"}:
+                continue
+            folder = base.replace(".", "/")
+            is_package = any(other.startswith(folder + "/") for other in embedded)
+            if is_package:
+                names = [n.strip().split(" as ")[0] for n in names_str.split(",")]
+                candidates = [f"{base}.{name}" for name in names if name and name != "*"]
+            else:
+                candidates = [base]
+            for dotted in candidates:
+                rel = _dotted_to_relpath(dotted)
+                if rel is None:
+                    continue
+                if rel not in embedded and (repo_root / rel).is_file():
+                    raise ValueError(
+                        f"Module {rel_path} imports {dotted} ({rel}) but it is not in MODULE_PATHS."
+                    )
+        for match in re.finditer(r"^\s*import\s+([A-Za-z0-9_.]+)", text, re.M):
+            dotted = match.group(1)
+            rel = _dotted_to_relpath(dotted)
+            if rel is not None and rel not in embedded and (repo_root / rel).is_file():
+                raise ValueError(
+                    f"Module {rel_path} imports {dotted} ({rel}) but it is not in MODULE_PATHS."
+                )
 
 
 def extract_memory_section_11(memory_path: Path) -> str:
@@ -104,34 +162,39 @@ def extract_memory_section_11(memory_path: Path) -> str:
 
 def build_declaration_markdown(section_11_text: str) -> str:
     """Assemble Cell 1 (required Markdown declaration) from MEMORY.md section 11."""
-    return f"""# ScamShield BD — Reproducible Baseline Pipeline
+    return f"""# ScamShield BD — Reproducible Final Pipeline
 
 > **Generated file:** Built by `tools/build_notebook.py`. Do not hand-edit this notebook.
 
 ## 1. Libraries & Environment
-- Core Python stack: `numpy`, `pandas`, `scipy`, `scikit-learn`, `joblib`, `python-dotenv` (exact runtime versions printed in Cell 2).
-- Standard MIT/BSD-licensed scientific Python libraries only.
+- Python 3.10–3.12; PyPI packages: `numpy`, `pandas`, `scipy`, `scikit-learn`, `joblib`, `ftfy`, `regex`, `unidecode`, `sentence-transformers`, `torch`, `python-dotenv` (exact runtime versions printed in Cell 2).
+- Build-time dependency: `nbformat`. Clean-run packages are installed/verified in Cell 2.
+- Licences: scientific Python libraries are BSD/MIT-compatible; the pretrained encoder is Apache-2.0 (below).
 
 ## 2. External Datasets, Pretrained Models & APIs (from `MEMORY.md` §11)
 {section_11_text}
 
-- **TF-IDF Vocabulary Policy:** All TF-IDF vectorizers are fit on **training data only** (never on test text).
-- **Secrets / Keys:** Read exclusively via `os.getenv` / `python-dotenv`. No keys are hardcoded in this notebook.
+- **TF-IDF Vocabulary Policy:** In the final `prediction.main()` path, `fit_all()` passes no `df_test`, so TF-IDF word/char vocabulary and IDF are fit on **labeled + augmented training text only**. `TfidfBlock.fit()` can optionally include test text for unsupervised IDF when a caller supplies `test_d`, but that path is not used to produce the submitted candidate.
+- **Model Features:** `prediction.py` uses word and char TF-IDF on `text_norm` (preserved text) and `text_skel` (skeleton), without message blocks or a raw-char branch.
+- **Secrets / Keys:** Read via `os.getenv` / `python-dotenv`. `REGENERATE_SYNTH=False`, so the clean run uses frozen LLM/pseudo-label files and needs **no API key**. A key is required only when explicitly enabling regeneration.
 
 ## 3. Method & Validation Summary
-- **Model:** E021 ensemble: multi-view TF-IDF (character skeleton + word + raw-char + first/last message + lexical cues) with class-balanced LR+LinearSVC M1 heads for Tasks A (`label`), B (`techniques`), and C (`action`), CV-tuned blend with declared Model 2 MiniLM E020 probabilities, a data-verified noise-only rule, and logistic confidence calibration with disagreement/OOD-similarity features.
-- **Validation:** 5x3 grouped cross-validation (`folds.csv`) on real labeled rows only, preventing leakage across duplicate/template groups, with slice metrics and leave-cluster-out checks. The 84 declared hand-written minimal-pair rows keep their `group_id` and are adopted only if grouped CV improves.
-- **Corruption Robustness:** Set A corruption augmentation is applied to training folds only (inheriting source `group_id`); Set B corruption is reserved for evaluation.
+- **Final model (Step 5 / E028):** 5x3 grouped CV with LR (E026) and LinearSVC (E027), promoted LLM + pseudo-label extras, full-test MiniLM Model 2 (E020), equal M1/M2 blend weights (0.50/0.50) for Tasks A/B/C, cross-fitted Task B thresholds, and a constant-confidence fallback. It writes `outputs/predictions/submission_E<mmdd>_<hhmm>.csv`, copied to `submission.csv`.
+- **Validation:** Deterministic saved 5-fold × 3-repeat grouped CV (`outputs/validation_results/folds.csv`) with duplicate/template isolation and leave-cluster-out checks. Nested cross-fitted F_B=0.7103; calibrator Brier=0.1283 (constant baseline).
+- **Corruption Robustness:** Set A augmentation is applied to training folds only (inheriting source `group_id`); Set B corruption is evaluation-only.
 
 ## 4. Reproducibility & Execution
-- **Random Seed:** `SEED = 42` (`PYTHONHASHSEED=42`, numpy/random/sklearn derived from `config.SEED`).
-- **Run Order:** Execute all cells top-to-bottom (`Run All`). The final cells train on labeled data, run `predict_df` on `test.csv`, validate the 5-column `submission.csv`, and verify compliance.
+- **Random Seed:** `PYTHONHASHSEED=42` and `config.set_seed(42)` for `random`, `numpy`, and `torch`; the embedded `folds.csv` is loaded, not rebuilt differently.
+- **Run Order:** Install/version cell → setup → module and frozen-data `%%writefile` cells → imports/seeding → data location → Model 2 OOF + test embeddings (500,000 rows; GPU if available) → `prediction.main()` → strict validation → `submission.csv` → optional comparison with `SCAMSHIELD_COMPARE_SUBMISSION`.
+- **Runtime:** Model 2 embeddings: about 6–9 min on a Kaggle T4/P100 GPU, roughly 3 h on CPU. The 500k-row preprocessing is cached and `predict_df` runs in 50,000-row chunks; emit a loud CPU warning before the full run. `SCAMSHIELD_TEST_SLICE=1000` executes a fast smoke test.
 """
 
 
 def build_install_cell() -> str:
     """Return Cell 2 source: ensure required packages exist and print runtime versions."""
-    return """import os
+    return """import importlib
+import importlib.metadata
+import os
 import platform
 import subprocess
 import sys
@@ -144,28 +207,30 @@ REQUIRED_PACKAGES = [
     ("scipy", "scipy"),
     ("sklearn", "scikit-learn"),
     ("joblib", "joblib"),
+    ("regex", "regex"),
+    ("ftfy", "ftfy"),
+    ("unidecode", "Unidecode"),
+    ("sentence_transformers", "sentence-transformers"),
+    ("torch", "torch"),
     ("dotenv", "python-dotenv"),
 ]
 
 for import_name, pip_name in REQUIRED_PACKAGES:
     try:
-        __import__(import_name)
+        importlib.import_module(import_name)
     except ImportError:
         print(f"Installing missing package: {pip_name}")
         subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", pip_name])
 
-import joblib
-import numpy as np
-import pandas as pd
-import scipy
-import sklearn
-
 print(f"Python:       {sys.version.split()[0]} ({platform.platform()})")
-print(f"numpy:        {np.__version__}")
-print(f"pandas:       {pd.__version__}")
-print(f"scipy:        {scipy.__version__}")
-print(f"scikit-learn: {sklearn.__version__}")
-print(f"joblib:       {joblib.__version__}")
+for pip_name in (
+    "numpy", "pandas", "scipy", "scikit-learn", "joblib", "regex", "ftfy",
+    "Unidecode", "sentence-transformers", "torch", "python-dotenv",
+):
+    try:
+        print(f"{pip_name + ':':<22}{importlib.metadata.version(pip_name)}")
+    except importlib.metadata.PackageNotFoundError:
+        print(f"{pip_name + ':':<22}unknown")
 """
 
 
@@ -213,6 +278,8 @@ def build_writefile_cell(rel_path: str, repo_root: Path, allow_missing: bool) ->
         )
 
     content = full_path.read_text(encoding="utf-8").rstrip() + "\n"
+    if "NotImplementedError" in content:
+        raise ValueError(f"Refusing to embed stub module containing NotImplementedError: {rel_path}")
     return f"%%writefile {rel_path}\n{content}"
 
 
@@ -236,7 +303,7 @@ if "." not in sys.path:
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
 
 from src import config, data_loader, prediction, submission
-from src.training import cross_validation
+from src.training import cross_validation, train_embeddings
 from tools import validate_submission
 
 SEED = getattr(config, "SEED", 42)
@@ -289,14 +356,51 @@ print(f"Test rows:    {len(df_test)} (full={len(df_test_full)})")
 
 
 def build_cv_cell() -> str:
-    """Return run cell for the full E021 CV/blend/calibration/final-fit/prediction pipeline."""
+    """Return run cell generating Model 2 artifacts then calling the final prediction pipeline."""
     return """t0 = time.perf_counter()
 tracemalloc.start()
 
-print("Running E021 grouped CV, M1+M2 blend, calibration, final fit, and prediction...")
-FINAL_SUBMISSION_PATH = prediction.main()
+M2_EXP = "E020"
+M2_OOF_PATH = config.OOF_DIR / f"{M2_EXP}_m2.npz"
+M2_TEST_PATH = config.PREDICTION_DIR / f"{M2_EXP}_m2_test.npz"
+expected_m2_rows = TEST_SLICE if TEST_SLICE is not None else len(df_test_full)
+
+need_m2 = not M2_OOF_PATH.exists() or not M2_TEST_PATH.exists()
+if not need_m2:
+    embedded_ids = np.load(M2_TEST_PATH, allow_pickle=True)["ids"]
+    need_m2 = len(embedded_ids) != expected_m2_rows
+
+if need_m2:
+    cuda_available = False
+    try:
+        import torch
+        cuda_available = torch.cuda.is_available()
+    except ImportError:
+        pass
+    if not cuda_available and TEST_SLICE is None:
+        logging.warning(
+            "CUDA unavailable: embedding 500,000 rows on CPU takes roughly 3 hours; "
+            "use a Kaggle GPU for the full clean run."
+        )
+    logging.info("Generating Model 2 OOF and test probabilities (%s)...", M2_EXP)
+    train_embeddings.run(
+        exp_id=M2_EXP,
+        test_limit=TEST_SLICE if TEST_SLICE is not None else None,
+    )
+    if TEST_SLICE is not None:
+        m2_data = np.load(M2_TEST_PATH, allow_pickle=True)
+        np.savez_compressed(
+            M2_TEST_PATH,
+            **{key: m2_data[key][:TEST_SLICE] for key in m2_data.files},
+        )
+
+assert M2_OOF_PATH.exists() and M2_TEST_PATH.exists(), "Model 2 artifacts were not generated"
+assert len(np.load(M2_TEST_PATH, allow_pickle=True)["ids"]) == expected_m2_rows
+
+print("Running final grouped CV, M1+M2 blend, calibration, final fit, and prediction...")
+FINAL_SUBMISSION_PATH = prediction.main(test_limit=TEST_SLICE)
 cv_elapsed = time.perf_counter() - t0
-print(f"E021 full pipeline completed in {cv_elapsed:.2f}s")
+print(f"Final pipeline completed in {cv_elapsed:.2f}s")
 """
 
 
@@ -311,15 +415,22 @@ out_dir.mkdir(parents=True, exist_ok=True)
 SUBMISSION_PATH = out_dir / "submission.csv"
 sub_df.to_csv(SUBMISSION_PATH, index=False, encoding="utf-8")
 
-# Also write to working directory root if OUT_DIR differs (convenient for Kaggle submission)
 root_sub = Path("submission.csv")
 if root_sub.resolve() != SUBMISSION_PATH.resolve():
     sub_df.to_csv(root_sub, index=False, encoding="utf-8")
 
+sample_for_check = SAMPLE_SUB_PATH
+test_for_check = TEST_PATH
+if TEST_SLICE is not None:
+    sample_for_check = out_dir / "validation_results" / "sample_submission_smoke.csv"
+    test_for_check = out_dir / "validation_results" / "test_smoke.csv"
+    pd.read_csv(SAMPLE_SUB_PATH).head(TEST_SLICE).to_csv(sample_for_check, index=False)
+    df_test_full.head(TEST_SLICE).to_csv(test_for_check, index=False)
+
 errors = validate_submission.validate(
     SUBMISSION_PATH,
-    sample_path=SAMPLE_SUB_PATH,
-    test_path=TEST_PATH,
+    sample_path=sample_for_check,
+    test_path=test_for_check,
 )
 if errors:
     raise RuntimeError("Submission validation failed:\n" + "\n".join(f"  - {e}" for e in errors))
@@ -334,9 +445,24 @@ print(
     f"Peak traced RAM: {peak_mem_bytes / (1024 ** 2):.1f} MB"
 )
 print("\nClass distribution:")
-print(sub_df["label"].value_counts().sort_index())
+print(sub_df["label"].value_counts(normalize=True).sort_index().round(3))
 print("\nConfidence summary:")
 print(sub_df["confidence"].describe())
+"""
+
+
+def build_compare_cell() -> str:
+    """Return final cell that compares the produced CSV with an optional reference path."""
+    return r"""compare_env = os.getenv("SCAMSHIELD_COMPARE_SUBMISSION", "").strip()
+if compare_env:
+    reference_path = Path(compare_env)
+    if not reference_path.is_file():
+        raise FileNotFoundError(f"SCAMSHIELD_COMPARE_SUBMISSION not found: {reference_path}")
+    reference_df = pd.read_csv(reference_path)
+    print(f"DataFrame.equals vs {reference_path}: {sub_df.equals(reference_df)}")
+    print(f"Byte equality vs {reference_path}: {SUBMISSION_PATH.read_bytes() == reference_path.read_bytes()}")
+else:
+    print("SCAMSHIELD_COMPARE_SUBMISSION not set; skipped CSV comparison.")
 """
 
 
@@ -348,6 +474,7 @@ def build_notebook(
     allow_missing: bool = False,
 ) -> NotebookNode:
     """Assemble and write notebooks/notebook.ipynb from repo modules and MEMORY.md §11."""
+    validate_modules(MODULE_PATHS, repo_root)
     section_11 = extract_memory_section_11(repo_root / memory_path)
 
     cells: list[NotebookNode] = [
@@ -358,6 +485,8 @@ def build_notebook(
 
     for rel_path in MODULE_PATHS:
         cells.append(new_code_cell(build_writefile_cell(rel_path, repo_root, allow_missing)))
+    for rel_path in FROZEN_DATA_PATHS:
+        cells.append(new_code_cell(build_writefile_cell(rel_path, repo_root, allow_missing)))
 
     cells.extend(
         [
@@ -365,6 +494,7 @@ def build_notebook(
             new_code_cell(build_data_location_cell()),
             new_code_cell(build_cv_cell()),
             new_code_cell(build_predict_and_validate_cell()),
+            new_code_cell(build_compare_cell()),
         ]
     )
 
@@ -412,6 +542,7 @@ def run_smoke_test(notebook_path: Path, test_slice: int = 1000) -> int:
         executed_out.name,
         "--output-dir",
         str(notebook_path.parent),
+        "--ExecutePreprocessor.timeout=3600",
     ]
     logger.info("Running smoke test: %s (SCAMSHIELD_TEST_SLICE=%d)", " ".join(cmd), test_slice)
     proc = subprocess.run(cmd, env=env, check=False)

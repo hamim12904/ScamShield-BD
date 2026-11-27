@@ -1,7 +1,7 @@
 """Word + char TF-IDF + structure feature block for Model 1.
 
 Owned by Teammate B (T-010).
-Vocabulary/IDF is fit on train + test text (unsupervised; declared in notebook §11).
+Vocabulary/IDF is fit on train text and, when `test_d` is supplied, test text (unsupervised; declared in notebook §11).
 """
 import logging
 import pickle
@@ -35,7 +35,8 @@ def build_text_dict(df: pd.DataFrame) -> dict:
         text_norm, text_skel, text_raw, first_msg, last_msg, struct_feats
     """
     prep   = [preprocess(t) for t in df["text"]]
-    clean  = [p["clean"] for p in prep]
+    norm   = [p["preserved"] for p in prep]
+    skel   = [p["skel"] for p in prep]
     raw    = df["text"].fillna("").tolist()
 
     firsts, lasts = [], []
@@ -61,8 +62,8 @@ def build_text_dict(df: pd.DataFrame) -> dict:
     )
 
     return {
-        "text_norm":    clean,   # will use build_views text_norm when A delivers it
-        "text_skel":    clean,   # will use build_views text_skel when A delivers it
+        "text_norm":    norm,
+        "text_skel":    skel,
         "text_raw":     raw,
         "first_msg":    firsts,
         "last_msg":     lasts,

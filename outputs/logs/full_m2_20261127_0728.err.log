@@ -1,0 +1,24 @@
+2026-11-27 07:29:02,237 INFO === Running Model 2 Pipeline (E020) with model=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 ===
+2026-11-27 07:29:02,242 INFO Loaded 86 labeled rows and folds table with columns: ['id', 'group', 'cluster', 'fold_r0', 'fold_r1', 'fold_r2']
+2026-11-27 07:29:02,252 INFO Extracting embeddings for 86 training rows...
+2026-11-27 07:29:02,253 INFO Loading cached embeddings from C:\Users\DELL\Downloads\ScamShield-BD\outputs\cache\emb_paraphrase_multilingual_MiniLM_L12_v2_ffcec44432c9b2d08c79eeb2bee3013b.npy
+2026-11-27 07:29:02,263 INFO Training embeddings shape: (86, 384)
+2026-11-27 07:29:02,266 INFO Cross-validating repeat 0 (fold_r0)...
+2026-11-27 07:29:02,596 INFO Cross-validating repeat 1 (fold_r1)...
+2026-11-27 07:29:02,815 INFO Cross-validating repeat 2 (fold_r2)...
+2026-11-27 07:29:03,036 INFO Saved OOF predictions to C:\Users\DELL\Downloads\ScamShield-BD\outputs\oof\E020_m2.npz
+2026-11-27 07:29:03,056 INFO CV Metrics: F_A=0.5748, F_B=0.5663, F_C=0.3428, Cal=0.6835, S_hat=0.5558
+C:\Users\DELL\Downloads\ScamShield-BD\src\training\train_embeddings.py:243: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  "timestamp": datetime.utcnow().isoformat(),
+2026-11-27 07:29:03,106 INFO Experiment logged: E020
+2026-11-27 07:29:03,678 INFO Loaded test set with 500000 rows
+2026-11-27 07:29:03,679 INFO Computing embeddings for all 500000 test rows...
+2026-11-27 07:30:17,383 INFO Encoding 500000 texts with sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 on cpu (batch=128, max_len=128)
+2026-11-27 07:30:17,768 INFO HTTP Request: GET https://huggingface.co/api/models/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 "HTTP/1.1 200 OK"
+2026-11-27 07:30:17,772 INFO Loading SentenceTransformer model from sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2.
+Loading weights:   0%|          | 0/199 [00:00<?, ?it/s]Loading weights:  41%|####1     | 82/199 [00:00<00:00, 789.17it/s]Loading weights: 100%|##########| 199/199 [00:00<00:00, 1395.50it/s]
+2026-11-27 07:30:19,267 INFO HTTP Request: GET https://huggingface.co/api/models/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/tree/main/additional_chat_templates?recursive=false&expand=false "HTTP/1.1 404 Not Found"
+2026-11-27 07:30:19,521 INFO HTTP Request: GET https://huggingface.co/api/models/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/tree/main?recursive=true&expand=false "HTTP/1.1 200 OK"
+2026-11-27 07:30:20,755 INFO HTTP Request: GET https://huggingface.co/api/models/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 "HTTP/1.1 200 OK"
+2026-11-27 10:44:15,973 INFO Saving embeddings to cache C:\Users\DELL\Downloads\ScamShield-BD\outputs\cache\emb_paraphrase_multilingual_MiniLM_L12_v2_23377dfcd84934b3bd9876a55aba3794.npy
+2026-11-27 10:44:23,663 INFO Saved test predictions to C:\Users\DELL\Downloads\ScamShield-BD\outputs\predictions\E020_m2_test.npz (A: (500000, 6), B: (500000, 6), C: (500000, 6), ood_sim: (500000,))

@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-27T08:24:42.313399+00:00",
+  "model": "gemini-3.5-flash-lite",
+  "prompt_version": "cd9ebbf4f0",
+  "raw": 450,
+  "kept": 450,
+  "dropped_by_reason": {
+    "invalid_schema": 0,
+    "low_confidence": 0,
+    "inconsistent_rules": 0,
+    "duplicate": 0
+  },
+  "kept_label_counts": {
+    "0": 105,
+    "1": 119,
+    "2": 33,
+    "3": 39,
+    "4": 60,
+    "5": 94
+  },
+  "run_stats": {
+    "cached": 0,
+    "live_calls": 450,
+    "failed": 0,
+    "prompt_tokens": 408065,
+    "completion_tokens": 17608,
+    "cost": 0.071775,
+    "stopped": null
+  }
+}

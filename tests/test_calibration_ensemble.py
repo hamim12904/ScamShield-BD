@@ -63,3 +63,14 @@ def test_ensemble_blend_and_tune():
     dis = model_disagreement(p1, p2)
     assert dis.shape == (4,)
     assert np.all((dis >= 0.0) & (dis <= 1.0))
+
+
+def test_tune_blend_prefers_equal_weights_within_noise():
+    probs = np.array([[0.6, 0.4], [0.3, 0.7], [0.55, 0.45], [0.4, 0.6]])
+    y = np.array([0, 1, 0, 1])
+    w, score, blended = tune_blend_weight(
+        probs, probs, y, lambda yt, yp: macro_f1_multiclass(yt, yp, labels=[0, 1])
+    )
+    assert w == 0.5
+    assert np.allclose(blended, probs)
+    assert score > 0.5

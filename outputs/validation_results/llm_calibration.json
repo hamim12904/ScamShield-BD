@@ -1,0 +1,76 @@
+{
+  "passed": true,
+  "min_macro_f1": 0.8,
+  "F_A": 0.9906878306878307,
+  "F_B": 0.8459101888449713,
+  "F_C": 0.8607411911759738,
+  "prompt_version": "cd9ebbf4f0",
+  "model": "gemini-3.5-flash-lite",
+  "n_rows": 86,
+  "ts": "2026-11-27T07:37:22.614907+00:00",
+  "confusion_matrix": [
+    [
+      31,
+      0,
+      0,
+      0,
+      0,
+      1
+    ],
+    [
+      0,
+      12,
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      10,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      11,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      0,
+      9,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      0,
+      0,
+      12
+    ]
+  ],
+  "worst_confusions": [
+    {
+      "true": 0,
+      "pred": 5,
+      "n": 1
+    }
+  ],
+  "misclassified": [
+    {
+      "id": 10063,
+      "true": 0,
+      "pred": 5,
+      "text": "Dear customer, your Robi 5GB pack expires on 30 Nov. Dial *123*1# to renew."
+    }
+  ]
+}

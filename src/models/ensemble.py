@@ -47,17 +47,26 @@ def tune_blend_weight(p1: np.ndarray,
 
     Returns (best_w, best_score, blended_probs).
     """
-    best_w, best_score, best_p = 0.5, -1.0, None
+    scores = {}
     for w in grid:
+        w = float(w)
         p = blend([p1, p2], weights=[w, 1.0 - w])
         pred = (p >= 0.5).astype(int) if is_multilabel else p.argmax(axis=1)
-        score = float(metric_fn(y_true, pred))
-        if score > best_score:
-            best_score = score
-            best_w = float(w)
-            best_p = p
+        scores[w] = float(metric_fn(y_true, pred))
+
+    raw_best_score = max(scores.values())
+    raw_best_w = min((w for w, s in scores.items() if s == raw_best_score),
+                     key=lambda w: abs(w - 0.5))
+    best_w = raw_best_w
+    if 0.5 in scores and raw_best_score - scores[0.5] <= 0.02:
+        best_w = 0.5
+    best_score = scores[best_w]
+    best_p = blend([p1, p2], weights=[best_w, 1.0 - best_w])
     log.info("Ensemble tune: best_w=%.2f (1-w=%.2f) -> score=%.4f",
              best_w, 1.0 - best_w, best_score)
+    if best_w != raw_best_w:
+        log.info("Ensemble tune: preferred equal weights (raw best w=%.2f, delta=%.4f <= 0.02)",
+                 raw_best_w, raw_best_score - best_score)
     return best_w, best_score, best_p
 
 

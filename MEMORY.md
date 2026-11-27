@@ -61,6 +61,7 @@
 | D-008 | 27 Nov 00:20 | Canonical saved folds live in `outputs/validation_results/folds.csv` (unified `fold_r0`..`fold_r2` across Tasks A/B/C + sparse duplicate `group` + `cluster` for leave-cluster-out), instead of `outputs/folds.json` | Single deterministic partition across all models/tasks; OOF arrays saved to `outputs/oof/<exp>_m1.npz` |
 | D-009 | 27 Nov 02:00 | `TfidfBlock` uses dict-based interface (`train_d, test_d` → `csr_matrix`); `build_text_dict(df)` is the bridge from DataFrame to dict | Richer than raw text list: carries text_norm, text_skel, first_msg, last_msg, struct_feats; falls back to `preprocess()` until A delivers `build_views`. B notified A and C. |
 | D-010 | 27 Nov 05:20 | Zero-shot LLM labeling pipeline in `src/llm_label.py` with SHA-256 caching (`data/extra/llm_labels_v1.jsonl`), calibration gate (F1 >= 0.80), and rule filtering | Augment scarce training data with model predictions from unlabeled test templates per rulebook §5 compliance rules |
+| D-011 | 27 Nov 05:26 | Keep the `text_norm`/`text_skel` fix; promote E023 (SVM) but not E022 (LR) alone; downstream re-tuning handled by Step 5 | E023 improves clean F_A +0.0118, corrupted F_A +0.0058, LCO +0.0062 with no slice loss over 3 pts; E022 improves F_A +0.0235 but drops Bangla-script F1 by 0.0556 on ~6 rows. Full table in §7. |
 
 ## 5. Findings from EDA (27 Nov, A1; full detail in `outputs/validation_results/eda_report.md`)
 
@@ -97,10 +98,24 @@
 | E018 | 27 Nov 03:10 | Phase 3: Blend `0.4·E015(LR) + 0.6·E016(LinearSVC)` + Logistic Calibration | 0.614 | 0.578 | 0.475 | 0.777 | 0.514 | 0.538 | Cal beats const Brier (`0.2228` vs `0.2305`) |
 | E020 | 27 Nov 03:57 | Model 2: paraphrase-multilingual-MiniLM-L12-v2 + LR (T-023) | 0.575 | 0.566 | 0.343 | 0.684 | 0.556 | — | 5x3 grouped CV on text_norm embeddings, C=1.0 |
 | E021 | 27 Nov 04:21 | Ensemble: `0.7·(0.4·LR+0.6·SVM) + 0.3·M2` + Task B thresholds + OOD calibration | 0.625 | 0.591 | 0.531 | 0.778 | — | 0.538 | Cal beats const (`0.2218` vs `0.2305`); OOF saved `E021_ens.npz` |
+| E022 | 27 Nov 05:23 | Skeleton-view fix: `text_norm=preserved`, `text_skel=skel`, LR C=5 | 0.596 | 0.447 | 0.478 | 0.778 | 0.509 | 0.550 | Saved folds; LCO 0.3092; Bangla-script slice 0.0185 vs 0.0741 old; LR not promoted alone |
+| E023 | 27 Nov 05:23 | Skeleton-view fix: `text_norm=preserved`, `text_skel=skel`, LinearSVC C=1 | 0.595 | 0.463 | 0.489 | 0.680 | 0.505 | 0.541 | Saved folds; LCO 0.3036; no slice drop over 3 pts; promoted for Step 5 blend re-tune |
 | E024 | 27 Nov 05:35 | Step 4: Real + LLM-augmented rows (weight=0.3, cap=400, near_real leak filter) | 0.756 | 0.691 | 0.578 | 0.790 | 0.692 | 0.711 | Promoted: +0.182 on F_A, F_dom=0.585 (+0.269), hard-legit slice 0.967 |
 | E025 | 27 Nov 06:00 | T-032: Real + LLM + Pseudo-labels (360 rows, 60/class, tau>=0.82, weight=0.25) | 0.861 | 0.809 | 0.823 | 0.841 | 0.834 | 0.819 | Massive promotion: F_A=0.861 (+0.105), F_dom=0.811 (+0.225), S_hat=0.8341 (+0.143) |
+| E028 | 27 Nov 11:45 BST | Step 5 re-tune: E026 LR + E027 SVM + E020 M2 + E025 extras; equal M1/M2 weights, cross-fitted Task B thresholds, constant-confidence fallback | 0.857 | 0.710 | 0.848 | 0.872 | — | — | Nested F_B (in-sample 0.821); w_lr=0.30, w_m1_a/b/c=0.50; thresholds `[0.52,0.5,0.48,0.38,0.56,0.38]`; Brier 0.1283 = constant baseline; `submission_E1127_0545.csv` |
 
 Real `experiments.csv` also holds three canonical-fold E001 runs (26 Nov 19:02/19:06/19:26 UTC; F_A 0.5867, 0.5867, 0.595) and the provisional-fold 0.524 row summarised above. The A2 error report uses the saved repeat-averaged OOF array, whose argmax macro-F1 is 0.510; state the source when quoting any of these numbers.
+
+Step 1 fair before/after (same saved folds, per-repeat means; old runs re-executed in memory with pre-fix views, new OOF saved as E022/E023):
+
+| Run | F_A | F_B | F_C | Corrupted F_A | lang_english | lang_banglish | lang_bangla_script | struct_single | struct_conversation | slice_hard_legit | LCO F_A |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| E015-old (LR) | 0.5728 | 0.4283 | 0.4796 | 0.5379 | 0.5334 | 0.5031 | 0.0741 | 0.6015 | 0.2253 | 0.6122 | 0.3156 |
+| E022-new (LR) | 0.5963 | 0.4466 | 0.4779 | 0.5500 | 0.5570 | 0.5435 | 0.0185 | 0.6120 | 0.3488 | 0.9778 | 0.3092 |
+| E016-old (SVM) | 0.5834 | 0.4493 | 0.4800 | 0.5355 | 0.5397 | 0.5817 | 0.0278 | 0.6130 | 0.2427 | 0.7886 | 0.2974 |
+| E023-new (SVM) | 0.5952 | 0.4631 | 0.4892 | 0.5413 | 0.5492 | 0.6595 | 0.0000 | 0.6210 | 0.3009 | 0.9778 | 0.3036 |
+
+Gate: E022 has F_A +0.0235, corrupted F_A +0.0121, LCO −0.0064 but Bangla-script −0.0556 on ~6 rows, so LR alone fails the 3-point slice rule. E023 has F_A +0.0118, corrupted F_A +0.0058, LCO +0.0062 and worst slice −0.0278, so the fix is kept and Step 5 must re-tune the LR/SVM/M1 blend.
 
 ## 8. Kaggle submission log
 
@@ -110,7 +125,8 @@ Real `experiments.csv` also holds three canonical-fold E001 runs (26 Nov 19:02/1
 | 2 | 27 Nov 03:04 | `outputs/predictions/submission_E1126_2104.csv` | Phase 2 E015 (`word+char`, `n_aug=5`, tuned Task B thresholds, `postprocess.py`) | *(pending upload)* | Candidate A |
 | 3 | 27 Nov 03:29 | `outputs/predictions/submission_E1126_2129.csv` | Phase 3 E018 (`0.4·LR + 0.6·LinearSVC` blend, logistic calibration, Task B thresholds, `postprocess.py`) | *(pending upload)* | No |
 | 4 | 27 Nov 04:21 | `outputs/predictions/submission_E1126_2221.csv` | Phase 3+4 E021 (`M1+M2` ensemble, OOD logistic calibration, Task B thresholds, `postprocess.py`) | *(pending upload)* | Candidate B |
-| 5 | 27 Nov 06:20 | `outputs/predictions/submission_E1127_0020.csv` | Step 5 Candidate: Real + LLM + Pseudo-labels (E025), cross-fitted thresholds, nested F_B=0.845, unskewed balanced mix | *(pending upload)* | Candidate C (Recommended Primary) |
+| 5 | 27 Nov 06:20 | `outputs/predictions/submission_E1127_0020.csv` | Step 5 Candidate: Real + LLM + Pseudo-labels (E025), cross-fitted thresholds, nested F_B=0.845, unskewed balanced mix | *(pending upload)* | Superseded by #6 |
+| 6 | 27 Nov 11:45 BST | `outputs/predictions/submission_E1127_0545.csv` | Step 5 rerun with full-test M2: E026/E027/E020/E028, equal M1/M2 weights (0.50/0.50), nested F_B=0.7103, constant-confidence Brier=0.1283, validator OK, H1 no longer supported | *(pending upload)* | Candidate C (Recommended Primary) |
 
 ## 9. Lessons and gotchas
 
@@ -136,35 +152,63 @@ Real `experiments.csv` also holds three canonical-fold E001 runs (26 Nov 19:02/1
 - PULL-04 (27 Nov 04:35 BST): merged commits `1d8a1c3` (C T-023 Model 2 embeddings + E020 OOF/test NPZs) and `c97ceee`; both MEMORY conflicts resolved manually, A work preserved, no A/B/C source file overwritten.
 - A3 doc sync (27 Nov 04:40 BST; runtime note corrected 05:00): `README.md` declares Model 2 and the `paraphrase-multilingual-MiniLM-L12-v2` encoder (Apache-2.0), removes the stale "no external model" claim, and states that Model 2 downloads declared weights and benefits from GPU for 500k rows. Actual wall time/peak memory still pending C's clean-run.
 - S-01 post-PULL-04 (27 Nov 04:50 BST): `python -m pytest -q` → **62 passed in 235.66s (0:03:55)** with C's new `test_embedding_features.py`; `cross_validation` passes; E015/E018 submissions pass strict validator. The 3m55s is suite time, not the clean-run runtime needed for `README.md:42`.
+- STEP2 (27 Nov 05:40 BST): `tools/diagnose_test.py` + `tests/test_diagnose.py` added; `python -m pytest -q` → **69 passed in 30.67s**; report `outputs/validation_results/test_diagnosis.md` generated from aggregate statistics only (no test ids/texts). H1 supported: 499,000/500,000 (99.80%) M2 rows equal the padded tail vector and ood_sim tail is constant; H2 not supported; H3 cannot tell; H4 shift supported for the shift itself with effect on errors unknown; H5 not supported. M1/M2 disagreement unavailable because M1 test probabilities are not saved.
+- STEP2 gotchas: `tools/diagnose_test.py` bootstraps repo root into `sys.path` so `python tools/diagnose_test.py` works; submission ids are strings while `test.csv` and NPZ ids are numeric, so comparisons cast to `str`; `load_or_build_preprocessed_test()` cache omits `has_url`, so the diagnosis recomputes it from `URL_RE` on `preserved`; cache `outputs/cache/test_prep_9c32897ed3.pkl` built once in 125.5s.
+- STEP2-FULL (27 Nov 05:44 BST): local CPU full-test M2 job completed (`python -m src.training.train_embeddings --exp-id E020 --full-test`, PID 10056; log `outputs/logs/full_m2_20261127_0728.err.log`). `outputs/predictions/E020_m2_test.npz` now has 500,000 rows; the padded-tail count is 1 (the last row itself, not 499,000), with 497,411 distinct `A` vectors and 473,785 distinct `ood_sim` values. Backup at `outputs_backup/pre_fulltest_20261127_0728/`. The run recomputed `E020_m2.npz` (F_A 0.5748 unchanged) and appended a second E020 row to `experiments.csv`. Kaggle GPU/CLI was unavailable, so CPU (~3h14m) was used. No submission regenerated yet; Step 5 blend retune is still required.
 
 ## 10. Handoff notes (rewrite at the end of every session)
 
 ```
-Last updated: 27 Nov post-T-032 by B/A (E025 Pseudo-Labeling + LLM-augmented training promoted)
+Last updated: 27 Nov 2026 by A (Step 5 rerun + Step 6 generated notebook/smoke test complete; integrated with B's Steps 3-5 + local Step 1/2)
 State:
-  DONE (T-032 / E025) — Implemented `src/pseudo_label.py` with `mine_pseudo_labels` (tau >= 0.82, max_per_class=60, postprocess consistency, weight=0.20), generating 360 balanced rows in `data/extra/pseudo_labels_v1.jsonl`.
-  DONE (E025 Promotion) — Evaluated on 5x3 grouped CV with near-real leak-free filtering (68 matching rows isolated):
-    F_A = 0.8610 (+0.105 vs E024, +0.287 vs baseline), F_B = 0.8090 (+0.118), F_C = 0.8230 (+0.245), Cal = 0.8410, F_robust = 0.8190, F_domain = 0.8106 (+0.225), S_hat = 0.8341 (+0.143). Slices: Banglish = 92.24%, Bangla script = 100.0%, hard-legit = 96.67%.
-    Decisive promotion to primary training configuration.
-  DONE (Tests) — `tests/test_pseudo_label.py` added with 4 unit tests (all passing).
-  DONE (Notebook) — Added `src/pseudo_label.py` to `tools/build_notebook.py`.
+  DONE (B/A, Steps 3-4 / T-032 / E025) — `src/llm_label.py` zero-shot labels + SHA-256 cache, `src/training/train_llm_aug.py` leak-free augmented training (E024), and `src/pseudo_label.py::mine_pseudo_labels` (tau >= 0.82, max_per_class=60, postprocess consistency, weight=0.20) generate 360 balanced rows in `data/extra/pseudo_labels_v1.jsonl`. E025 5x3 grouped CV with 68 near-real rows isolated: F_A=0.8610, F_B=0.8090, F_C=0.8230, Cal=0.8410, F_robust=0.8190, F_domain=0.8106, S_hat=0.8341; Banglish=92.24%, Bangla script=100.0%, hard-legit=96.67%. Decisive promotion to primary training configuration.
+  DONE (B/A, Step 5) — `src/prediction.py` re-tuned on E026 LR + E027 SVM + E020 full-test M2 + E025 extras, wrote E028 ensemble OOF and `outputs/predictions/submission_E1127_0545.csv` (§8 #6, Candidate C, recommended primary). Backup `outputs_backup/pre_step5_rerun_20261127_1131/`; log `outputs/logs/step5_rerun_20261127_1131.log`; command `python -m src.prediction`; seed 42; 5 folds x 3 repeats. w_lr=0.30 (F_A=0.9103); M1/M2 equal weights 0.50/0.50 for A/B/C (F_A=0.8574, F_C=0.8477); thresholds `[0.52,0.5,0.48,0.38,0.56,0.38]`; nested cross-fitted F_B=0.7103 (in-sample 0.821); calibrator fell back to constant with Brier 0.1283 (Cal 0.8717). Strict validator OK; label mix {0:.368,1:.169,2:.096,3:.083,4:.129,5:.155} vs E021 {0:.735,...}; H1 no longer supported.
+  DONE (Tests) — `tests/test_pseudo_label.py`, `tests/test_tfidf_views.py`, `tests/test_diagnose.py`, Step 5 equal-weight tie-break test, and `tests/test_build_notebook.py` added. Final `pytest -q` → 87 passed in 34.20s; `submission_E1127_0545.csv` passed strict validation.
+  DONE (Notebook source) — `src/pseudo_label.py` added to `tools/build_notebook.py`; final Step 6 rebuild is complete below.
+  DONE (Step 6) — `tools/build_notebook.py` now validates embedded modules/stubs, embeds `llm_labels_v1.jsonl`, `pseudo_labels_v1.jsonl` and `folds.csv` as `%%writefile` cells, installs/verifies required libraries, recursively finds nested `/kaggle/input` data dirs, generates E020 Model 2 inside the notebook, calls `prediction.main(test_limit=...)`, performs strict sliced validation, reports optional `SCAMSHIELD_COMPARE_SUBMISSION` comparison, and sets the nbconvert timeout to 3600 s. Generated `notebooks/notebook.ipynb` has 35 cells and is never hand-edited.
+  DONE (Step 6 smoke) — isolated `jupyter nbconvert --execute` with `SCAMSHIELD_TEST_SLICE=1000` passed: embedded `folds.csv` was loaded, E020 M2 was generated inside the notebook, strict validation passed, wall time 1057.30 s, peak traced RAM 1146.3 MB. Full 500,000-row clean run is still pending; expected CPU ≈3 h, Kaggle GPU ≈5.5–8.5 min dominated by embeddings.
+  DONE (Step 6 tests) — new `tests/test_build_notebook.py` rejects `NotImplementedError` stubs and missing embedded imports and checks `find_nested_data_dir()`. Focused run: 3 passed; full `pytest -q` → 87 passed in 34.20s.
+  DONE (B, PULL-05) — T-030/T-031/T-040 complete: blended M1 (E015 LR + E016 LinearSVC) with C's E020 M2; OOF gains F_A 0.5825 -> 0.6253, F_B 0.578 -> 0.5908, F_C 0.505 -> 0.5308, Cal 0.7782 (Brier 0.2218 vs const 0.2305). E021 ensemble artifacts: `outputs/oof/E021_ens.npz` and `outputs/predictions/submission_E1126_2221.csv`.
+  DONE (A, Step 1) — `build_text_dict` maps `text_norm` to `preprocess()["preserved"]` and `text_skel` to `preprocess()["skel"]`; E022/E023 OOF saved on saved folds. E022 LR fails the 3-point slice gate, E023 SVM passes; keep the fix, with downstream re-tuning now handled by Step 5 (D-011).
+  DONE (A, Step 2) — aggregate-only diagnosis tool/report delivered (`tools/diagnose_test.py`, `tests/test_diagnose.py`, `outputs/validation_results/test_diagnosis.md`). Re-run on the Step 5 candidate produced `outputs/validation_results/test_diagnosis_step5.md`: 0.00% padded M2 rows, H1 not supported, class mix close to the labeled sample. No individual test texts or ids were logged or written.
+  DONE (A, Step 2 full-test fix) — full-test M2 embeddings generated locally on CPU at 05:44 BST; `outputs/predictions/E020_m2_test.npz` covers all 500,000 rows with no 499k padded tail (1 self-match, 497,411 distinct A vectors, 473,785 distinct ood_sim). E020 OOF recomputed and a second E020 row logged. Kaggle GPU/CLI was unavailable.
+  DONE (B) — Phase 1 E001, Phase 2 E015 tuning/postprocess, Phase 3 E018 blend + logistic calibration shipped in `src/prediction.py`.
+  DONE (C, PULL-04) — Model 2 T-023: `embedding_features.py` + `train_embeddings.py` executed as E020; E020 F_A=0.5748, F_B=0.5663, F_C=0.3428, Cal=0.6835, S_hat=0.5558.
+  DONE (C, local before PULL-05) — `tools/build_notebook.py` rebuilt from `src/` with A5 frozen writefile + §11 tick; 1,000-row clean smoke test passed in 36.93s. Superseded by the final Step 6 rebuild/smoke above.
+  DONE (A) — F-06 verified; A1 `eda_report.md`; A2 `error_analysis.py` + e001_m1 report/PNG/CSVs; A3 `README.md` draft + API-note cleanup; F-09 `folds.csv` cleanup + role mapping.
+  DONE (A, S-01 FINAL) — after the Model 2 pull, `python -m pytest -q` → 62 passed in 235.66s; post-integration 83 passed in 32.51s; after Step 5 changes 84 passed in 33.91s; after Step 6 tests 87 passed in 34.20s. E015/E018 and Step 5 candidates pass the strict validator.
+  DONE (A, S-06) — `.env` present, empty, git-ignored; `.env.example` present; README states no-API setup.
+  DONE (A, A5) — 84 hand-written hard-legit/minimal-pair rows in `data/extra/handwritten.py`; declared in §11; zero raw/clean overlap with sample/test.
+  RESOLVED — A's `build_views()` is in `src/preprocessing.py`; B's older note about `text_norm`/`text_skel`/`first_msg` fallback is stale.
+  REVISED — LLM labeling, leak-free LLM-augmented training and pseudo-labeling are now implemented/promoted (E024/E025); hand-written extras remain optional.
+  HANDOFF TO B — A5 remains optional: load `data/extra/handwritten.py::load_handwritten()` (84 rows, weight 0.75 default), keep `group_id`, adopt only if grouped-CV F_A/F_rob/F_dom do not drop.
+  HANDOFF TO B — F-05: 2 noise-only rows, both 0/NONE/0 (n=2; keep p=0.60 as assumption).
+  HANDOFF TO B — F-04: 8 rules at >=95% (`eda_report.md` §6); B's 4 postprocess rules are a subset — check the remaining 4 on grouped CV.
+  HANDOFF TO B — A2: class-5 collapse, script/conversation weakness, hard-legit collisions + low T2/T6 recall.
+  HANDOFF TO C/A — README declarations synced (Model 2 + hand-written extras + frozen LLM labels + pseudo-labeling); 1k-row smoke wall time/peak memory recorded in README §Approximate runtime and §10; full 500k clean-run timing still needed.
 Next 3 steps:
-  1. Complete Step 5 downstream tuning via `src/prediction.py` to produce candidate submission.
-  2. Implement `tools/make_zip.py` (C4 · P0) enforcing strictly 4 root items: `submission.csv`, `notebook.ipynb`, `.env`, `README.md`.
-  3. Validate ZIP archive using `tools/validate_submission.py` and compute SHA-256 checksums.
+  1. B/A: upload Candidate C (`submission_E1127_0545.csv`) plus a second candidate, log public scores in §8, and select both finals; do not hand-edit CSVs.
+  2. C/A: implement/verify `tools/make_zip.py` (T-054), validate ZIP/SHA-256, and sign S-07 items 1/4/5; notebook rebuild and 1k smoke are done, full clean run still pending.
+  3. A/B: decide on optional A5 hand-written extras and the remaining 4 postprocess rules only if grouped-CV is positive; otherwise freeze the current pipeline.
+Blockers / questions for teammate:
+  - Resolved: local `.venv` has pytest 9.2.0; post-Step-5 `pytest -q` → 84 passed; C's clean environment must install `requirements.txt`.
+  - Resolved: README now declares Model 2/encoder, hand-written extras, frozen LLM labels and pseudo-labeling; 1k smoke runtime/peak memory recorded, full clean-run runtime still pending.
+  - A5 grouped-CV decision still pending; do not enable `load_handwritten()` in final training unless a grouped-CV check is positive.
+  - §8 #6 still needs a public score; §7 now includes E028 Step 5 re-tune numbers.
+  - Resolved: full-test M2 embeddings were used in Step 5; `test_diagnosis_step5.md` reports H1 not supported.
 
-Where results live: README.md ; data/extra/llm_labels_v1.jsonl ; data/extra/pseudo_labels_v1.jsonl ; outputs/validation_results/experiments.csv ; outputs/oof/E025_m1.npz ; outputs/predictions/
+Where results live: README.md ; data/extra/handwritten.py ; data/extra/llm_labels_v1.jsonl ; data/extra/pseudo_labels_v1.jsonl ; notebooks/ ; notebooks/notebook.ipynb ; tools/ ; tools/build_notebook.py ; tools/diagnose_test.py ; tests/test_build_notebook.py ; tests/test_diagnose.py ; outputs_backup/pre_step5_rerun_20261127_1131/ ; outputs/cache/test_prep_9c32897ed3.pkl ; outputs/logs/step5_rerun_20261127_1131.log ; outputs/validation_results/eda_report.md ; outputs/validation_results/e001_m1_error_report.md ; outputs/validation_results/e001_m1_confusion.png ; outputs/validation_results/experiments.csv ; outputs/validation_results/folds.csv ; outputs/validation_results/test_diagnosis.md ; outputs/validation_results/test_diagnosis_step5.md ; outputs/oof/E015_m1.npz ; outputs/oof/E020_m2.npz ; outputs/oof/E021_ens.npz ; outputs/oof/E022_m1.npz ; outputs/oof/E023_m1.npz ; outputs/oof/E024_m1.npz ; outputs/oof/E025_m1.npz ; outputs/oof/E028_ens.npz ; outputs/predictions/E020_m2_test.npz ; outputs/predictions/submission_E1127_0545.csv ; outputs/predictions/
 ```
 
 ## 11. Declaration checklist (feeds the notebook's first cells)
 
 | Resource | Type | Source / provider | Licence | Purpose | Declared in notebook? |
 |---|---|---|---|---|---|
-| scikit-learn, pandas, numpy, scipy | libraries | PyPI | BSD | modelling/data | [ ] |
-| sentence-transformers + sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 | pretrained model | Hugging Face | Apache-2.0 | multilingual dense sentence embeddings for Model 2 and OOD similarity | [x] |
-| LLM API (if used) | hosted API | Configurable via `.env` (`LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY`) | Provider terms | label unlabeled test templates by code; predictions only | [x] |
-| Hand-written extra examples (84 rows / 14 groups) | `data/extra/handwritten.py` | our own, authored by A from PRD + labeled sample patterns only; zero overlap with test | n/a | optional training augmentation, pending B's grouped-CV check | [x] |
-| Pseudo-labeling on `test.csv` text | method | our code | n/a | semi-supervised (if adopted) | [ ] |
+| scikit-learn, pandas, numpy, scipy, ftfy, regex, unidecode, torch, python-dotenv | libraries | PyPI | BSD/MIT | modelling, preprocessing, data handling, clean-run install | [x] |
+| sentence-transformers + sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 | pretrained model | Hugging Face | Apache-2.0 | Model 2 OOF + full-test embeddings and OOD similarity | [x] |
+| LLM API (if used) | hosted API | Configurable via `.env` (`LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY`) | Provider terms | frozen `llm_labels_v1.jsonl` is embedded; `REGENERATE_SYNTH=False` needs no key; key only for explicit regeneration | [x] |
+| Hand-written extra examples (84 rows / 14 groups) | `data/extra/handwritten.py` | our own, authored by A from PRD + labeled sample patterns only; zero overlap with test | n/a | declared only; not used in final E028/Step 5 pipeline | [x] |
+| Pseudo-labeling on `test.csv` text | method | our code | n/a | semi-supervised (adopted in E025/Step 5; frozen file embedded) | [x] |
 
 ## 12. Glossary
 

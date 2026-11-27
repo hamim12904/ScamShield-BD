@@ -337,14 +337,24 @@ def main(
     ens_exp: str = "E028",
     use_extra: bool = True,
     extra_paths: Optional[Sequence[Path]] = None,
-    require_unpadded_m2: bool = False,
+    require_unpadded_m2: bool = True,
+    test_limit: Optional[int] = None,
 ) -> str:
     """Fit on all labeled data, blend M1+M2 if available, calibrate, predict test, write submission."""
     t0 = time.time()
     df       = load_sample()
     test     = load_test()
+    if test_limit is not None and test_limit < len(test):
+        test = test.head(test_limit).copy()
     template = load_submission_template()
+    if len(template) != len(test):
+        template = template.head(len(test)).copy()
     all_real_ids = df["id"].values.tolist()
+
+    real_tech_count = techniques_to_multihot(df["techniques"]).sum(axis=1)
+    log.info("Real rows label x technique-count x action==0:\n%s",
+             pd.crosstab(df["label"], real_tech_count,
+                         values=df["action"].eq(0), aggfunc="mean").round(3))
 
     # 1. Load promoted extra data (LLM + pseudo-labels) if enabled
     processed_extra = None
@@ -374,6 +384,16 @@ def main(
             log.info("Loaded %d extra rows for training (%d with near-real matches)",
                      len(processed_extra), near_count)
 
+            filtered_llm = processed_extra[
+                processed_extra["source"].astype(str).eq("llm")
+                & processed_extra["near_real_ids"].apply(lambda ids: len(ids) == 0)
+            ]
+            if not filtered_llm.empty:
+                llm_tech_count = techniques_to_multihot(filtered_llm["techniques"]).sum(axis=1)
+                log.info("Filtered LLM rows label x technique-count x action==0:\n%s",
+                         pd.crosstab(filtered_llm["label"], llm_tech_count,
+                                     values=filtered_llm["action"].eq(0), aggfunc="mean").round(3))
+
     log.info("Running %d-fold × %d-repeat grouped CV (LR: %s & LinearSVC: %s)...",
              config.N_SPLITS, config.N_REPEATS, exp_lr, exp_svm)
     res_lr, sum_lr, oof_lr = _cv_oof(
@@ -393,6 +413,7 @@ def main(
 
     p_lr, p_svm = oof_lr["clean"]["proba"], oof_svm["clean"]["proba"]
     w_lr, fa_m1, m1_a = tune_blend_weight(p_lr, p_svm, y_a, macro_f1_multiclass)
+    log.info("LR/SVM OOF blend weight: w_lr=%.2f, F_A=%.4f", w_lr, fa_m1)
     m1_b = oof_lr["clean"]["proba_b"]
     m1_c = oof_lr["clean"]["proba_c"]
 
@@ -447,16 +468,15 @@ def main(
         extra = np.column_stack([nr, dis])
 
     thrs = tune_task_b_thresholds(ens_b, Y_true, folds_arr)
-    # Compute nested (cross-fitted) Task B estimate
-    from sklearn.metrics import f1_score
     nested_scores = []
-    for j in range(Y_true.shape[1]):
-        y_col = Y_true[:, j]
-        p_col = ens_b[:, j]
-        pred_col = (p_col >= thrs[j]).astype(int)
-        nested_scores.append(f1_score(y_col, pred_col, zero_division=0))
+    for f in np.unique(folds_arr):
+        tr = folds_arr != f
+        va = ~tr
+        fold_thrs = np.asarray(tune_task_b_thresholds(ens_b[tr], Y_true[tr], folds_arr[tr]), dtype=float)
+        pred_col = (ens_b[va] >= fold_thrs).astype(int)
+        nested_scores.append(macro_f1_techniques(Y_true[va], pred_col))
     nested_fb = float(np.mean(nested_scores))
-    log.info("Tuned Task B thresholds: %s (nested F_B estimate=%.4f)", thrs, nested_fb)
+    log.info("Task B thresholds: %s (nested cross-fitted F_B estimate=%.4f)", thrs, nested_fb)
 
     cal = fit_confidence(ens_a, y_a, extra_feats=extra, folds=folds_arr, noise_only=no)
 

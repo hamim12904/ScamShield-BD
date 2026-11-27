@@ -32,7 +32,20 @@ def find_data_dir() -> Path:
         for sub in kaggle_input.iterdir():
             if sub.is_dir() and (sub / "sample.csv").exists():
                 return sub
+        nested = find_nested_data_dir(kaggle_input)
+        if nested is not None:
+            return nested
     return ROOT / "data"   # default; loader will raise a clear error if missing
+
+
+def find_nested_data_dir(base: Path) -> Path | None:
+    """Return the sorted-first directory under base that contains sample.csv."""
+    if not base.exists():
+        return None
+    for path in sorted(base.rglob("sample.csv")):
+        if path.is_file():
+            return path.parent
+    return None
 
 
 def set_seed(seed: int = 42) -> None:
